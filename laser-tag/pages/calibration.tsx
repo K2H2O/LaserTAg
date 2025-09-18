@@ -3,8 +3,8 @@ import * as tf from "@tensorflow/tfjs";
 import * as poseDetection from "@tensorflow-models/pose-detection";
 import { Keypoint } from "@tensorflow-models/pose-detection";
 import "@mediapipe/pose";
-import { useNavigate, useLocation } from "react-router-dom";
-
+//import { useNavigate, useLocation } from "react-router-dom";
+import { useRouter } from "next/router";
 
 export default function Calibration() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -14,9 +14,11 @@ export default function Calibration() {
   const [username, setUsername] = useState("");
   const lastSentColorRef = useRef<string|null>(null); // ✅ Ref to track last sent color
 
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { gameCode } = location.state || {};
+  //const navigate = useNavigate();
+  //const location = useLocation();
+  //const { gameCode } = location.state || {};
+  const router = useRouter();
+  const { gameCode } = router.query;
 
   useEffect(() => {
     let detectorInstance;
@@ -237,9 +239,10 @@ export default function Calibration() {
 
     lastSentColorRef.current = modeColor; // ✅ save color in ref
 
-    // Navigate to player lobby after successful color capture
-    navigate("/player_lobby", {
-      state: {
+    
+    router.push({
+      pathname: "/PlayerLobby",
+      query: {
         color: getClosestColorName(lastSentColorRef.current),
         username,
         gameCode,
@@ -272,7 +275,7 @@ export default function Calibration() {
         }}
       >
         <img
-          src="/images/Laser-Tag-Logo.png"
+          src="/images/Laser-Tag.png"
           alt="Laser Tag Logo"
           style={{
             maxHeight: "80px", // Reduced for mobile

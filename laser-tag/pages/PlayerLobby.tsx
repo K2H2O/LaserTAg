@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+//import { useLocation, useNavigate } from "react-router-dom";
+import { useRouter } from "next/router";
 
 interface Player { username: string; color: string }
 interface Message { type: string; playerList?: Player[]; admin?: string }
@@ -12,9 +13,11 @@ export default function PlayerLobby() {
   const maxReconnectAttempts = 5;
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const { state } = useLocation();
-  const { gameCode, username, color } = state || {};
-  const navigate = useNavigate();
+  //const { state } = useLocation();
+  //const { gameCode, username, color } = state || {};
+  //const navigate = useNavigate();
+  const router = useRouter();
+  const { gameCode, username, color } = router.query;
 
   useEffect(() => {
     // Early return if required data is missing
@@ -67,12 +70,10 @@ export default function PlayerLobby() {
               (p) => p.username === username
             );
 
-            navigate("/camera_view", {
-              state: {
-                username,
-                gameCode,
-                color,
-              },
+            
+            router.push({
+              pathname: "/CameraView",
+              query: { username, gameCode, color },
             });
           }
         } catch (error) {
@@ -131,7 +132,7 @@ export default function PlayerLobby() {
         socketRef.current = null;
       }
     };
-  }, [gameCode, username, color, navigate]); // ✅ Include ALL dependencies
+  }, [gameCode, username, color]); // ✅ Include ALL dependencies
 
   const handleStartGame = () => {
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
@@ -149,7 +150,8 @@ export default function PlayerLobby() {
   };
 
   const goBackToHome = () => {
-    navigate("/");
+    //navigate("/");
+    router.push("/");
   };
 
   return (
@@ -240,7 +242,7 @@ export default function PlayerLobby() {
               </span>
               {playerName === adminUsername && (
                 <img
-                  src="/images/admin-crown(2).png"
+                  src="/images/admin-crown.png"
                   alt="Admin Icon"
                   style={{
                     position: "absolute",
