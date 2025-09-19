@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import * as tf from "@tensorflow/tfjs";
 import * as poseDetection from "@tensorflow-models/pose-detection";
 import { Keypoint } from "@tensorflow-models/pose-detection";
-import "@mediapipe/pose";
-//import { useNavigate, useLocation } from "react-router-dom";
 import { useRouter } from "next/router";
 
 export default function Calibration() {
