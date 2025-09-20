@@ -3,6 +3,8 @@ const WebSocket = require("ws");
 const { randomUUID } = require("crypto");
 const { parse } = require("url");
 const appData = require("./app-data");
+const { send } = require("process");
+const { type } = require("os");
 
 const server = http.createServer();
 const wss = new WebSocket.Server({ server });
@@ -24,16 +26,18 @@ function sendToClients(session, message, sendToPlayers, sendToSpectators) {
         }
     }
 }
-
+ //new things added for health
 function getPlayerList(session) {
     return Object.keys(session.players).map((username) => {
-        const { color, hitsGiven, hitsTaken, points } = session.players[username];
+        const { color, hitsGiven, hitsTaken, points , health } = session.players[username];
         return {
             username,
             color,
             hitsGiven,
             hitsTaken,
-            points
+            points,
+            health
+
         };
     })
 }
@@ -66,6 +70,13 @@ setInterval(() => {
         if (session.state === "game") {
             session.timeLeft -= 1;
 
+            //for players with low health 
+            for (let player of Object.values(session.player)){
+                if(player.health <= 10 && player.points >0){
+                    player.points=0; 
+                }
+                
+            }
             sendToClients(
                 session,
                 JSON.stringify({
@@ -81,7 +92,7 @@ setInterval(() => {
                 session.state = "finished";
             } else {
                 // powerups
-                const powerups = ['invincibility', 'instakill']
+                const powerups = ['invincibility', 'instakill','healthBoost'] // new added health boost
                 for (let player of Object.values(session.players)) {
                     // decrease durations
                     for (let powerupId in player.activePowerups) {
@@ -92,15 +103,38 @@ setInterval(() => {
 
                     // give new
                     if (Math.random() < 0.06) {
+                        const powerups =['invincibility', 'instakill','healthBoost'] // new added health boost
                         const selectedPowerup = powerups[Math.floor(Math.random() * powerups.length)]
                         const powerupDuration = 10
-                        player.activePowerups[selectedPowerup] = powerupDuration
+                        
+                        // handle health boost powerup
+                        if(selectedPoowerup === 'healthBoost'){
+                            player.health = Math.min(100 , player.health +30);
+
+                        }
+                        else{
+                           player.activePowerups[selectedPowerup] = powerupDuration
+                        }
+                        
                         player.connection.send(JSON.stringify({
                             type: 'powerup',
                             powerup: selectedPowerup,
                             duration: powerupDuration
                         }));
                     }
+                }
+                sendToClients(
+                    session,
+                    JSON.stringify({
+                        type: "gameUpdate",
+                        timeLeft: session.timeLeft,
+                        players: getPlayerList(session),
+                    }),
+                    true,
+                    true
+                );
+                if(session.timeLeft <= 0){
+                    session.state="finished";
                 }
             }
         }
@@ -194,6 +228,7 @@ wss.on("connection", (ws, req) => {
             hitsGiven: 0,
             hitsTaken: 0,
             points: 50,
+            health: 100,
             activePowerups: {}
         };
 
@@ -249,8 +284,13 @@ wss.on("connection", (ws, req) => {
                     true
                 );
             } else if (type === "cameraFrame") {
-                const { frame } = message;
+                const { frame , health } = message; // health message here
                 session.latestFrames[username] = frame;
+
+                // update players health from client 
+                if(health != undefined && session.players[username]){
+                    session.players[username].health = health;
+                }
 
                 // Send all frames to spectators
                 const spectatorMessage = JSON.stringify({
@@ -258,10 +298,40 @@ wss.on("connection", (ws, req) => {
                     frames: Object.entries(session.latestFrames).map(([user, frame]) => ({
                         username: user,
                         frame,
+                        health: session.players[user]?.health ||100 // send players health to spectator data.
                     })),
                 });
 
                 sendToClients(session, spectatorMessage, false, true);
+            }
+            else if (type === "forfeit"){
+                console.info(`Player ${username} has forfeited the game.`);
+                if (session.player[username]){
+                    session.players[username].health =0;
+                    session.players[username].points =0;
+                }
+                // notify other players
+                sendToClients(
+                    session,
+                    JSON.stringify({
+                        type:"playerForfeit",
+                        forfeitingPlayer: username,
+                        message: `${username} has forfeited the game.`
+                    }),
+                    true,
+                    true
+                    
+                );
+                sendToClients(
+                    session,
+                    JSON.stringify({
+                        type: "gameUpdate",
+                        admin: session.timeLeft,
+                        playerList: getPlayerList(session),
+                    }),
+                    true,
+                    true
+                );
             }
         });
 
@@ -306,6 +376,7 @@ wss.on("connection", (ws, req) => {
 function handleHit(session, player, color, weapon) {
     if (color === 'cyan') return // invalid color
     if (player.points <= 0) return // already eliminated
+    if(player.health <= 10) return // already eliminated
 
     // get target player from color
     let target;
@@ -318,6 +389,10 @@ function handleHit(session, player, color, weapon) {
     }
 
     if (!target || target.points <= 0 || target.activePowerups.invincibility > 0) return;
+    if(!target || target.health <= 10 || target.activePowerups.invincibility > 0) return; // for health
+
+    target.health = Math.max(0, target.health - 10); // decrease health by 10 on each hit
+    player.health = Math.min(100, player.health + 10); // increase health by 5 on each hit, max 100
 
     // update points
     if (player.activePowerups.instakill > 0) {
@@ -347,9 +422,24 @@ function handleHit(session, player, color, weapon) {
             player: player.username,
             target: target.username,
             weapon,
+            targetHealth: target.health,
+            shooterHealth: player.health // new added
         }),
         true,
         true
+    );
+    // elimination based on health
+    if (target.health <= 10)
+        sendToClients(
+            session,
+            JSON.stringify({
+                type: "elimination",
+                player: target.username,
+                weapon,
+                cause:"health_depleted"
+            }),
+            true,
+            true    
     );
 
     if (target.points <= 0) {
@@ -373,3 +463,10 @@ function start(port) {
 }
 
 module.exports = { start };
+
+
+
+
+
+// NEW: Modified game timer logic (in the main setInterval)
+// Add health checking to the existing timer logic:

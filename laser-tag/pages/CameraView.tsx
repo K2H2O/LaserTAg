@@ -1,9 +1,9 @@
 /* global cv */
 import { useEffect, useRef, useState } from "react";
 //import { useLocation, useNavigate } from "react-router-dom";
-import { useRouter } from "next/router";
+import { useRouter } from "next/router"; // navigate between pages and read URL parameters
 import * as tf from "@tensorflow/tfjs";
-import * as poseDetection from "@tensorflow-models/pose-detection";
+import * as poseDetection from "@tensorflow-models/pose-detection"; // find human pose in the camera feed
 import { Keypoint } from "@tensorflow-models/pose-detection";
 import "@tensorflow/tfjs-backend-webgl";
 
@@ -14,7 +14,8 @@ interface Player
     points : number,
     hitsGiven : number,
     hitsTaken : number,
-  }
+    health? : Number, // addedd healthy property 
+  } // defines what player object looks like
 
   interface CanvasWithHitData extends HTMLCanvasElement 
   { isPersonCentered: boolean; modeColor: string; }
@@ -27,6 +28,9 @@ export default function CameraView() {
   const [gunType, setGunType] = useState<"pistol" | "shotgun" | "sniper">("pistol");
   const [zoomEnabled, setZoomEnabled] = useState(false);
   const [activePowerup, setActivePowerup] = useState(null);
+
+  // health state ivy
+  const [health , setHealth] = useState(100);
 
   // Game state
   const [gameTimeString, setGameTimeString] = useState("00:00");
@@ -41,7 +45,7 @@ export default function CameraView() {
   // Extract URL state params
   const router = useRouter();
   const { username, gameCode, color } = router.query;
-
+  
   // Leaderboard state
   const [leaderboardData, setLeaderboardData] = useState<Player[]>([]);
   const sortedPlayers = [...leaderboardData]
@@ -49,12 +53,41 @@ export default function CameraView() {
     .slice(0, 3);
 
   const currentPlayer = leaderboardData.find((p) => p.username === username);
-  const isDead = currentPlayer?.points === 0;
+  //const isDead = currentPlayer?.points === 0;
+
+  // ivy testing something
+  const isDead = health <= 10;
 
   // WebSocket ref
   type AudioKey = "pistol" | "shotgun" | "sniper" | "ouch" | "powerup";
   const socketRef = useRef<WebSocket | null>(null);
   const audioRef= useRef<Record<AudioKey, HTMLAudioElement>| null>(null);
+
+    //ivy  health bar color calculation
+  const getHealthBarColor = (healthValue: number) : string =>{
+    if(healthValue <= 30) {
+      return "#ff4444"; // danger
+    }
+    else if (healthValue <= 70) {
+      return "#ffaa00"; // orange warning
+  }else{
+    return "#44ff44"; // green still safe
+  }
+};
+// forferfeit in the middle of the game 
+  const handleForfeit = () => {
+    const confirmForfeit = window.confirm("Are you sure you want to forfeit the game? This will end you participation.");
+    if (confirmForfeit) {
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({ type: "forfeit", username }));
+    }
+    // Redirect if they confrim forfeit
+    router.push({
+      pathname : "/PlayerLeaderboard",
+      query : { players : JSON.stringify(leaderboardData) },
+    });
+  }
+};
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -91,7 +124,7 @@ export default function CameraView() {
     const socket = new WebSocket(
       `wss://bbd-lasertag.onrender.com/session/${gameCode}?username=${username}&color=${color}`
     );
-    socketRef.current = socket;
+    socketRef.current = socket; // check existing data exist before connecting
 
     socket.onopen = () => console.log("Connected to WebSocket");
     socket.onmessage = (event) => {
@@ -103,7 +136,17 @@ export default function CameraView() {
             timeLeft % 60
           ).padStart(2, "0")}`
         );
+        
+
         setLeaderboardData(players);
+
+        // Update health of current player 
+      const currentPlayerData = players.find((p: Player) => p.username === username);
+        if (currentPlayerData && currentPlayerData.health !== undefined) {
+          setHealth(currentPlayerData.health);
+        }
+
+
         if (timeLeft === 0) {
          router.push({
             pathname: "/PlayerLeaderboard",
@@ -122,8 +165,14 @@ export default function CameraView() {
             ouch.currentTime = 0;
             ouch.play().catch((e) => console.warn("Ouch sound failed:", e));
           }
+          setHealth(prevHealth => Math.max(10 , prevHealth - 10)) // reduce health by 10 but not below 0
+        }
+        if(player === username){
+          setHealth(prevHealth => Math.min(100 , prevHealth + 10))
         }
       }
+       // end of what I added
+
       if (data.type === "powerup") {
         const { powerup, duration } = data;
         console.log(`⚡ Powerup received: ${powerup} for ${duration}s`);
@@ -142,7 +191,13 @@ export default function CameraView() {
           setActivePowerup(null);
         }, duration * 1000);
       }
+       //  handle forfeit message response 
+       if(data.type === "playerForfeited"){
+        const { forfeitedPlayer} = data ;
+        console.log(`🏳️ Player ${forfeitedPlayer} has forfeited the game`);
+       }
     };
+    // end 
     socket.onclose = () => console.log("WebSocket closed");
     socket.onerror = (e) => console.error("WebSocket error", e);
 
@@ -513,6 +568,7 @@ export default function CameraView() {
               type: "cameraFrame",
               username,
               frame,
+              health,
             })
           );
         }, 100);
@@ -529,7 +585,7 @@ export default function CameraView() {
 
     sendFrames();
     return () => clearInterval(intervalId);
-  }, [username]);
+  }, [username , health]);
 
   return (
     <div
@@ -570,6 +626,7 @@ export default function CameraView() {
           pointerEvents: "none",
         }}
       />
+     
 
       {activePowerup && (
         <div
@@ -646,151 +703,211 @@ export default function CameraView() {
           </div>
         )}
 
+     
+      {/* REPOSITIONED: Gun Area with Health Bar and Forfeit Below */}
         <div
           style={{
             position: "absolute",
-            bottom: "10%",
+            bottom: "5%",
             left: "50%",
             transform: "translateX(-50%)",
             zIndex: 10,
             display: "flex",
-            flexDirection: "row",
+            flexDirection: "column",
             alignItems: "center",
-            gap: "20px",
+            gap: "15px",
           }}
         >
+        {/* Gun and Ammo */}
           <div
             style={{
               display: "flex",
-              flexDirection: "column",
+              flexDirection: "row",
+              alignItems: "center",
+              gap: "20px",
+            }}
+          >
+          <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+              }}
+            >
+              <img
+                key={gunType}
+                src={
+                  gunType === "shotgun"
+                    ? "/images/shotgun.png"
+                    : gunType === "sniper"
+                    ? "/images/sniper.png"
+                    : "/images/pistol.png"
+                }
+                alt="Shoot"
+                onClick={handleShoot}
+                style={{
+                  width: "150px",
+                  height: "150px",
+                  cursor: isReloading ? "not-allowed" : "pointer",
+                  transition: "transform 0.1s ease-in-out",
+                }}
+                onTouchStart={(e: React.TouchEvent<HTMLImageElement>|React.MouseEvent<HTMLImageElement>) => {
+                  e.currentTarget.style.transform = "scale(0.95)";
+                }}
+                onTouchEnd={(e: React.TouchEvent<HTMLImageElement>|React.MouseEvent<HTMLImageElement>) => {
+                  e.currentTarget.style.transform = "scale(1)";
+                }}
+              />
+              <div style={{ display: "flex", gap: "4px", marginTop: "10px" }}>
+                {Array.from({ length: ammo }).map((_, i) => (
+                  <img
+                    key={i}
+                    src="/bullet.png"
+                    alt="Bullet"
+                    style={{ width: "40px", height: "40px" }}
+                  />
+                ))}
+              </div>
+            </div>
+            {isReloading && (
+              <div
+                style={{
+                  color: "#ff4444",
+                  backgroundColor: "rgba(0,0,0,0.6)",
+                  padding: "10px 16px",
+                  borderRadius: "8px",
+                  fontWeight: "bold",
+                  textAlign: "center",
+                }}
+              >
+                Reloading...
+              </div>
+            )}
+          </div>
+
+{/* REPOSITIONED: Health Bar Below Gun */}
+          <div
+            style={{
+              width: "300px",
+              height: "20px",
+              backgroundColor: "rgba(0, 0, 0, 0.7)",
+              border: "2px solid #fff",
+              borderRadius: "10px",
+              overflow: "hidden",
+              position: "relative",
+            }}
+          >
+            <div
+              style={{
+                width: `${health}%`,
+                height: "100%",
+                backgroundColor: getHealthBarColor(health),
+                transition: "all 0.3s ease-in-out",
+              }}
+            />
+            <div
+              style={{
+                position: "absolute",
+                top: "0",
+                left: "0",
+                width: "100%",
+                height: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "#fff",
+                fontWeight: "bold",
+                fontSize: "12px",
+                textShadow: "1px 1px 2px rgba(0,0,0,0.8)",
+              }}
+            >
+              {health}%
+            </div>
+          </div>
+
+          {/* REPOSITIONED: Gun Selection and Forfeit Below Health Bar */}
+          <div
+            style={{
+              display: "flex",
+              gap: "10px",
               alignItems: "center",
             }}
           >
-            <img
-              key={gunType}
-              src={
-                gunType === "shotgun"
-                  ? "/images/shotgun.png"
-                  : gunType === "sniper"
-                  ? "/images/sniper.png"
-                  : "/images/pistol.png"
-              }
-              alt="Shoot"
-              onClick={handleShoot}
+            <button
+              onClick={() => selectGun("pistol")}
               style={{
-                width: "150px",
-                height: "150px",
-                cursor: isReloading ? "not-allowed" : "pointer",
-                transition: "transform 0.1s ease-in-out",
-              }}
-              onTouchStart={(e:React.TouchEvent<HTMLImageElement>|React.MouseEvent<HTMLImageElement>) => {
-                e.currentTarget.style.transform = "scale(0.95)";
-              }}
-              onTouchEnd={(e:React.TouchEvent<HTMLImageElement>|React.MouseEvent<HTMLImageElement>) => {
-                e.currentTarget.style.transform = "scale(1)";
-              }}
-            />
-            <div style={{ display: "flex", gap: "4px", marginTop: "10px" }}>
-              {Array.from({ length: ammo }).map((_, i) => (
-                <img
-                  key={i}
-                  src="/bullet.png"
-                  alt="Bullet"
-                  style={{ width: "40px", height: "40px" }}
-                />
-              ))}
-            </div>
-          </div>
-          {isReloading && (
-            <div
-              style={{
-                color: "#ff4444",
-                backgroundColor: "rgba(0,0,0,0.6)",
-                padding: "10px 16px",
+                padding: "5px 10px",
+                fontSize: "14px",
                 borderRadius: "8px",
-                fontWeight: "bold",
-                textAlign: "center",
+                border: "1px solid #ccc",
+                backgroundColor: "#333",
+                color: "#fff",
+                cursor: "pointer",
               }}
             >
-              Reloading...
-            </div>
-          )}
+              Pistol
+            </button>
+
+            <button
+              onClick={() => selectGun("shotgun")}
+              style={{
+                padding: "5px 10px",
+                fontSize: "14px",
+                borderRadius: "8px",
+                border: "1px solid #ccc",
+                backgroundColor: "#333",
+                color: "#fff",
+                cursor: "pointer",
+              }}
+            >
+              Shotgun
+            </button>
+
+            <button
+              onClick={() => selectGun("sniper")}
+              style={{
+                padding: "5px 10px",
+                fontSize: "14px",
+                borderRadius: "8px",
+                border: "1px solid #ccc",
+                backgroundColor: "#333",
+                color: "#fff",
+                cursor: "pointer",
+              }}
+            >
+              Sniper
+            </button>
+
+            {/* REPOSITIONED: Forfeit Button */}
+            <button
+              onClick={handleForfeit}
+              style={{
+                padding: "5px 15px",
+                fontSize: "14px",
+                borderRadius: "8px",
+                border: "2px solid #ff4444",
+                backgroundColor: "rgba(255, 68, 68, 0.8)",
+                color: "#fff",
+                cursor: "pointer",
+                fontWeight: "bold",
+                transition: "all 0.2s ease-in-out",
+              }}
+              onMouseOver={(e) => {
+                const target = e.target as HTMLButtonElement;
+                target.style.backgroundColor = "#ff4444";
+                target.style.transform = "scale(1.05)";
+              }}
+              onMouseOut={(e) => {
+                const target = e.target as HTMLButtonElement;
+                target.style.backgroundColor = "rgba(255, 68, 68, 0.8)";
+                target.style.transform = "scale(1)";
+              }}
+            >
+              🏳️ Forfeit
+            </button>
+          </div>
         </div>
 
-        <div
-          style={{
-            position: "absolute",
-            bottom: "2%",
-            left: "50%",
-            transform: "translateX(-50%)",
-            display: "flex",
-            gap: "10px",
-            zIndex: 3,
-          }}
-        >
-          <button
-            onClick={() => selectGun("pistol")}
-            style={{
-              padding: "5px 10px",
-              fontSize: "14px",
-              borderRadius: "8px",
-              border: "1px solid #ccc",
-              backgroundColor: "#333",
-              color: "#fff",
-              cursor: "pointer",
-            }}
-          >
-            Pistol
-          </button>
-
-          <button
-            onClick={() => selectGun("shotgun")}
-            style={{
-              padding: "5px 10px",
-              fontSize: "14px",
-              borderRadius: "8px",
-              border: "1px solid #ccc",
-              backgroundColor: "#333",
-              color: "#fff",
-              cursor: "pointer",
-            }}
-          >
-            Shotgun
-          </button>
-
-          <button
-            onClick={() => selectGun("sniper")}
-            style={{
-              padding: "5px 10px",
-              fontSize: "14px",
-              borderRadius: "8px",
-              border: "1px solid #ccc",
-              backgroundColor: "#333",
-              color: "#fff",
-              cursor: "pointer",
-            }}
-          >
-            Sniper
-          </button>
-        </div>
-
-        <div
-          style={{
-            position: "absolute",
-            top: "2%",
-            left: "50%",
-            transform: "translateX(-50%)",
-            color: "white",
-            fontSize: "18px",
-            fontWeight: "bold",
-            backgroundColor: "rgba(0, 0, 0, 0.6)",
-            padding: "6px 12px",
-            borderRadius: "8px",
-            zIndex: 5,
-          }}
-        >
-          {gameTimeString}
-        </div>
 
         {/* Leaderboard */}
         <div

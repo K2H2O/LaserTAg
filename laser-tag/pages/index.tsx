@@ -177,7 +177,7 @@ export default function LandingPage() {
             onMouseOver={(e) => {const target = e.target as HTMLButtonElement;
               target.style.backgroundColor = "#00aaff"}}
             onMouseOut={(e) => {const target = e.target as HTMLButtonElement;
-              target.style.backgroundColor = "#00bfff"}}
+              target.style.backgroundColor = "#800080"}}
           >
             Join as Player
           </button>
@@ -195,9 +195,9 @@ export default function LandingPage() {
               transition: "background-color 0.3s",
             }}
             onMouseOver={(e) => {const target = e.target as HTMLButtonElement;
-               target.style.backgroundColor = "#666"}}
+               target.style.backgroundColor = "#00aaff"}}
             onMouseOut={(e) => { const target = e.target as HTMLButtonElement;
-              target.style.backgroundColor = "#888"}}
+              target.style.backgroundColor = "#800080"}}
           >
             Join as Spectator
           </button>
