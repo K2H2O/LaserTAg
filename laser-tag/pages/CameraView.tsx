@@ -14,11 +14,26 @@ interface Player
     points : number,
     hitsGiven : number,
     hitsTaken : number,
-    health? : Number, // addedd healthy property 
+    health? : number, // addedd healthy property 
   } // defines what player object looks like
 
   interface CanvasWithHitData extends HTMLCanvasElement 
   { isPersonCentered: boolean; modeColor: string; }
+
+  // new interface for the minimap
+  interface PlayerPosition{
+    username : string,
+    latitude: number,
+    longitude: number,
+    color :string ,
+    lastUpdated: number // to confirm if we should add colon or comma
+  }
+  interface MinimapBounds{
+    minLat: number,
+    maxLat: number,
+    minLon: number,
+    maxLon:number,
+  }
 
 export default function CameraView() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -31,6 +46,11 @@ export default function CameraView() {
 
   // health state ivy
   const [health , setHealth] = useState(100);
+
+  // min map states
+  const [playerPosition , setPlayerPositions] = useState<PlayerPosition[]>([]);
+  const [myPosition , setMyPosition] =useState<{latitude:number ; longitude:number} |null >(null);
+  const [locationPermission , setLocationPermission] =useState<'granted' |'denied' | 'prompt'>('prompt');
 
   // Game state
   const [gameTimeString, setGameTimeString] = useState("00:00");
@@ -55,8 +75,8 @@ export default function CameraView() {
   const currentPlayer = leaderboardData.find((p) => p.username === username);
   //const isDead = currentPlayer?.points === 0;
 
-  // ivy testing something
-  const isDead = health <= 10;
+  // testing something
+  const isDead = health <= 10; // whether 0 or 10 %
 
   // WebSocket ref
   type AudioKey = "pistol" | "shotgun" | "sniper" | "ouch" | "powerup";
@@ -88,6 +108,76 @@ export default function CameraView() {
     });
   }
 };
+ // location tracking functions
+
+const requestLocationPermission = async () => {
+  if (!navigator.geolocation) {
+    console.warn("Geolocation is not supported by this browser.");
+    return false;
+  }
+
+  try {
+    const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 60000
+      });
+    });
+    
+    setMyPosition({
+      latitude: position.coords.latitude,
+      longitude: position.coords.longitude
+    });
+    setLocationPermission('granted');
+    return true;
+  } catch (error) {
+    console.error("Location permission denied:", error);
+    setLocationPermission('denied');
+    return false;
+  }
+};
+
+const sendPosition = (latitude: number, longitude: number) => {
+  if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+    socketRef.current.send(JSON.stringify({
+      type: "playerPosition",
+      username,
+      latitude,
+      longitude,
+      timestamp: Date.now()
+    }));
+  }
+};
+
+const calculateMinimapBounds = (positions: PlayerPosition[]): MinimapBounds => {
+  if (positions.length === 0) {
+    return { minLat: 0, maxLat: 0, minLon: 0, maxLon: 0 };
+  }
+
+  const lats = positions.map(p => p.latitude);
+  const lons = positions.map(p => p.longitude);
+  
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons);
+  const maxLon = Math.max(...lons);
+  
+  const padding = 0.0005;
+  
+  return {
+    minLat: minLat - padding,
+    maxLat: maxLat + padding,
+    minLon: minLon - padding,
+    maxLon: maxLon + padding
+  };
+};
+
+const gpsToMinimap = (lat: number, lon: number, bounds: MinimapBounds, mapSize: number) => {
+  const x = ((lon - bounds.minLon) / (bounds.maxLon - bounds.minLon)) * mapSize;
+  const y = mapSize - ((lat - bounds.minLat) / (bounds.maxLat - bounds.minLat)) * mapSize;
+  return { x, y };
+};
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -113,6 +203,43 @@ export default function CameraView() {
       });
     }
   }, []);
+
+  // Location tracking 
+useEffect(() => {
+  let watchId: number | null = null;
+
+  const startLocationTracking = async () => {
+    const hasPermission = await requestLocationPermission();
+    if (!hasPermission) return;
+
+    watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const newPos = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude
+        };
+        setMyPosition(newPos);
+        sendPosition(newPos.latitude, newPos.longitude);
+      },
+      (error) => {
+        console.error("Location tracking error:", error);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 5000
+      }
+    );
+  };
+
+  startLocationTracking();
+
+  return () => {
+    if (watchId !== null) {
+      navigator.geolocation.clearWatch(watchId);
+    }
+  };
+}, [username]);
 
   // Connect to WebSocket & listen for game updates
   useEffect(() => {
@@ -196,6 +323,15 @@ export default function CameraView() {
         const { forfeitedPlayer} = data ;
         console.log(`🏳️ Player ${forfeitedPlayer} has forfeited the game`);
        }
+
+       // Handle player positions - ADD THIS
+  if (data.type === "playerPositions") {
+      const { positions } = data;
+      setPlayerPositions(positions.map((pos: any) => ({
+      ...pos,
+       lastUpdated: Date.now()
+      })));
+}
     };
     // end 
     socket.onclose = () => console.log("WebSocket closed");
@@ -587,6 +723,145 @@ export default function CameraView() {
     return () => clearInterval(intervalId);
   }, [username , health]);
 
+ // Minimap Component - ADD THIS
+const Minimap = () => {
+  const mapSize = 120;
+  const allPositions = [
+    ...playerPosition,
+    ...(myPosition ? [{
+      username: username as string,
+      latitude: myPosition.latitude,
+      longitude: myPosition.longitude,
+      color: color as string,
+      lastUpdated: Date.now()
+    }] : [])
+  ];
+
+  if (allPositions.length === 0) {
+    return (
+      <div
+        style={{
+          width: mapSize,
+          height: mapSize,
+          backgroundColor: "rgba(0, 0, 0, 0.8)",
+          border: "2px solid #fff",
+          borderRadius: "10px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "#fff",
+          fontSize: "10px",
+          textAlign: "center",
+        }}
+      >
+        No GPS Data
+      </div>
+    );
+  }
+
+  const bounds = calculateMinimapBounds(allPositions);
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        width: mapSize,
+        height: mapSize,
+        backgroundColor: "rgba(50, 50, 50, 0.9)",
+        border: "2px solid #fff",
+        borderRadius: "10px",
+        overflow: "hidden",
+      }}
+    >
+      <svg
+        width={mapSize}
+        height={mapSize}
+        style={{ position: "absolute", top: 0, left: 0 }}
+      >
+        {[0, 1, 2, 3, 4].map(i => (
+          <line
+            key={`h${i}`}
+            x1={0}
+            y1={(i * mapSize) / 4}
+            x2={mapSize}
+            y2={(i * mapSize) / 4}
+            stroke="rgba(255,255,255,0.2)"
+            strokeWidth="1"
+          />
+        ))}
+        {[0, 1, 2, 3, 4].map(i => (
+          <line
+            key={`v${i}`}
+            x1={(i * mapSize) / 4}
+            y1={0}
+            x2={(i * mapSize) / 4}
+            y2={mapSize}
+            stroke="rgba(255,255,255,0.2)"
+            strokeWidth="1"
+          />
+        ))}
+      </svg>
+
+      {allPositions.map((player) => {
+        const { x, y } = gpsToMinimap(player.latitude, player.longitude, bounds, mapSize);
+        const isMe = player.username === username;
+        const isStale = Date.now() - player.lastUpdated > 30000;
+
+        return (
+          <div
+            key={player.username}
+            style={{
+              position: "absolute",
+              left: x - 4,
+              top: y - 4,
+              width: "8px",
+              height: "8px",
+              borderRadius: "50%",
+              backgroundColor: isStale ? "#666" : player.color,
+              border: isMe ? "2px solid #fff" : "1px solid #000",
+              boxShadow: isMe ? "0 0 6px rgba(255,255,255,0.8)" : "none",
+              zIndex: isMe ? 10 : 5,
+              opacity: isStale ? 0.5 : 1,
+            }}
+            title={`${player.username}${isStale ? ' (offline)' : ''}`}
+          >
+            {isMe && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "-12px",
+                  left: "-6px",
+                  fontSize: "8px",
+                  color: "#fff",
+                  fontWeight: "bold",
+                  textShadow: "1px 1px 1px #000",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                YOU
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      <div
+        style={{
+          position: "absolute",
+          top: "4px",
+          right: "4px",
+          fontSize: "8px",
+          color: "#fff",
+          fontWeight: "bold",
+          textShadow: "1px 1px 1px #000",
+        }}
+      >
+        N
+      </div>
+    </div>
+  );
+};
+
   return (
     <div
       style={{
@@ -946,8 +1221,44 @@ export default function CameraView() {
               </div>
             </div>
           ))}
+           
         </div>
-      </div>
+{/* Minimap - ADD THIS */}
+<div
+  style={{
+    position: "absolute",
+    bottom: "2%",
+    left: "2%",
+    zIndex: 10,
+  }}
+>
+  <div
+    style={{
+      marginBottom: "8px",
+      color: "#fff",
+      fontSize: "12px",
+      fontWeight: "bold",
+      textShadow: "1px 1px 2px rgba(0,0,0,0.8)",
+    }}
+  >
+    Map
+  </div>
+  <Minimap />
+  {locationPermission === 'denied' && (
+    <div
+      style={{
+        marginTop: "4px",
+        fontSize: "8px",
+        color: "#ffaa00",
+        textAlign: "center",
+      }}
+    >
+      Location disabled
     </div>
+  )}
+</div>
+
+ </div>
+</div>
   );
 }

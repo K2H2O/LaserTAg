@@ -41,6 +41,25 @@ function getPlayerList(session) {
         };
     })
 }
+// new function for the map
+function broadcastPlayerPositions(session) {
+    const positions = Object.values(session.players)
+        .filter(player => player.position.latitude !== null && player.position.longitude !== null)
+        .map(player => ({
+            username: player.username,
+            color: player.color,
+            latitude: player.position.latitude,
+            longitude: player.position.longitude,
+            lastUpdated: player.position.lastUpdated
+        }));
+
+    const message = JSON.stringify({
+        type: "playerPositions",
+        positions: positions
+    });
+
+    sendToClients(session, message, true, true);
+}
 
 // game timers, information updates, session closing
 setInterval(() => {
@@ -70,10 +89,20 @@ setInterval(() => {
         if (session.state === "game") {
             session.timeLeft -= 1;
 
+             const now =Date.now();
+             const staleThreshold = 2*60*1000;
+
             //for players with low health 
-            for (let player of Object.values(session.player)){
+            for (let player of Object.values(session.players)){
                 if(player.health <= 10 && player.points >0){
                     player.points=0; 
+                }
+                if (player.position.lastUpdated && 
+                    now - player.position.lastUpdated > staleThreshold) {
+                    console.info(`Cleaning stale position for ${player.username}`);
+                    player.position.latitude = null;
+                    player.position.longitude = null;
+                    player.position.lastUpdated = null;
                 }
                 
             }
@@ -108,7 +137,7 @@ setInterval(() => {
                         const powerupDuration = 10
                         
                         // handle health boost powerup
-                        if(selectedPoowerup === 'healthBoost'){
+                        if(selectedPowerup === 'healthBoost'){
                             player.health = Math.min(100 , player.health +30);
 
                         }
@@ -123,6 +152,10 @@ setInterval(() => {
                         }));
                     }
                 }
+            // broadcast player positions every 5 seconds during the game 
+                if (session.timeLeft % 5 === 0) {
+                broadcastPlayerPositions(session);
+            }
                 sendToClients(
                     session,
                     JSON.stringify({
@@ -229,7 +262,12 @@ wss.on("connection", (ws, req) => {
             hitsTaken: 0,
             points: 50,
             health: 100,
-            activePowerups: {}
+            activePowerups: {},
+            position :{
+                latitude : null,
+                longitude : null,
+                lastUpdated: null
+            }
         };
 
         // send player joined message
@@ -306,7 +344,7 @@ wss.on("connection", (ws, req) => {
             }
             else if (type === "forfeit"){
                 console.info(`Player ${username} has forfeited the game.`);
-                if (session.player[username]){
+                if (session.players[username]){
                     session.players[username].health =0;
                     session.players[username].points =0;
                 }
@@ -314,8 +352,8 @@ wss.on("connection", (ws, req) => {
                 sendToClients(
                     session,
                     JSON.stringify({
-                        type:"playerForfeit",
-                        forfeitingPlayer: username,
+                        type:"playerForfeited",
+                        forfeitedPlayer: username,
                         message: `${username} has forfeited the game.`
                     }),
                     true,
@@ -333,6 +371,30 @@ wss.on("connection", (ws, req) => {
                     true
                 );
             }
+            else if (type === "playerPosition") {
+    const { latitude, longitude, timestamp } = message;
+    
+    // Validate coordinates
+    if (typeof latitude === 'number' && typeof longitude === 'number' &&
+        latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180) {
+        
+        // Update player position
+        if (session.players[username]) {
+            session.players[username].position = {
+                latitude: latitude,
+                longitude: longitude,
+                lastUpdated: timestamp || Date.now()
+            };
+            
+            console.info(`Updated position for ${username}: ${latitude}, ${longitude}`);
+            
+            // Broadcast updated positions to all players
+            broadcastPlayerPositions(session);
+        }
+    } else {
+        console.warn(`Invalid coordinates from ${username}: ${latitude}, ${longitude}`);
+    }
+}
         });
 
         ws.on("close", () => {
@@ -449,6 +511,7 @@ function handleHit(session, player, color, weapon) {
                 type: "elimination",
                 player: target.username,
                 weapon,
+                cause : "points_depleted"
             }),
             true,
             true
