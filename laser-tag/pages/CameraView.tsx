@@ -44,7 +44,7 @@ export default function CameraView() {
   const [zoomEnabled, setZoomEnabled] = useState(false);
   const [activePowerup, setActivePowerup] = useState(null);
 
-  // health state ivy
+  // health state 
   const [health , setHealth] = useState(100);
 
   // min map states
@@ -83,7 +83,7 @@ export default function CameraView() {
   const socketRef = useRef<WebSocket | null>(null);
   const audioRef= useRef<Record<AudioKey, HTMLAudioElement>| null>(null);
 
-    //ivy  health bar color calculation
+    // health bar color calculation
   const getHealthBarColor = (healthValue: number) : string =>{
     if(healthValue <= 30) {
       return "#ff4444"; // danger
@@ -298,7 +298,7 @@ useEffect(() => {
           setHealth(prevHealth => Math.min(100 , prevHealth + 10))
         }
       }
-       // end of what I added
+       
 
       if (data.type === "powerup") {
         const { powerup, duration } = data;
@@ -324,7 +324,7 @@ useEffect(() => {
         console.log(`🏳️ Player ${forfeitedPlayer} has forfeited the game`);
        }
 
-       // Handle player positions - ADD THIS
+       // Handle player positions 
   if (data.type === "playerPositions") {
       const { positions } = data;
       setPlayerPositions(positions.map((pos: any) => ({
@@ -723,7 +723,7 @@ useEffect(() => {
     return () => clearInterval(intervalId);
   }, [username , health]);
 
- // Minimap Component - ADD THIS
+ // Minimap Component 
 const Minimap = () => {
   const mapSize = 120;
   const allPositions = [
@@ -979,7 +979,7 @@ const Minimap = () => {
         )}
 
      
-      {/* REPOSITIONED: Gun Area with Health Bar and Forfeit Below */}
+      {/*  Gun Area with Health Bar and Forfeit  */}
         <div
           style={{
             position: "absolute",
@@ -1060,7 +1060,7 @@ const Minimap = () => {
             )}
           </div>
 
-{/* REPOSITIONED: Health Bar Below Gun */}
+{/*  Health Bar Below Gun */}
           <div
             style={{
               width: "300px",
@@ -1100,7 +1100,7 @@ const Minimap = () => {
             </div>
           </div>
 
-          {/* REPOSITIONED: Gun Selection and Forfeit Below Health Bar */}
+          {/* Gun Selection and Forfeit Below Health Bar */}
           <div
             style={{
               display: "flex",
@@ -1153,7 +1153,7 @@ const Minimap = () => {
               Sniper
             </button>
 
-            {/* REPOSITIONED: Forfeit Button */}
+            {/*  Forfeit Button */}
             <button
               onClick={handleForfeit}
               style={{
@@ -1223,7 +1223,7 @@ const Minimap = () => {
           ))}
            
         </div>
-{/* Minimap - ADD THIS */}
+{/* Minimap - */}
 <div
   style={{
     position: "absolute",
