@@ -3,16 +3,66 @@ const WebSocket = require("ws");
 const { randomUUID } = require("crypto");
 const { parse } = require("url");
 const appData = require("./app-data");
+const fs =require('fs').promises;
+const path =require('path');
 const { send } = require("process");
 const { type } = require("os");
 
 const server = http.createServer();
 const wss = new WebSocket.Server({ server });
 
+
+// Sound preferences storage
+let soundPreferences = new Map();
+const SOUND_PREFERENCES_FILE = path.join(__dirname, 'sound_preferences.json');
+
+// Load sound preferences from file on server start
+async function loadSoundPreferences() {
+    try {
+        const data = await fs.readFile(SOUND_PREFERENCES_FILE, 'utf8');
+        const preferences = JSON.parse(data);
+        soundPreferences = new Map(Object.entries(preferences));
+        console.log('Sound preferences loaded from file');
+    } catch (error) {
+        console.log('No existing sound preferences file found, starting fresh');
+    }
+}
+
+// Save sound preferences to file
+async function saveSoundPreferences() {
+    try {
+        const preferences = Object.fromEntries(soundPreferences);
+        await fs.writeFile(SOUND_PREFERENCES_FILE, JSON.stringify(preferences, null, 2));
+        console.log('Sound preferences saved to file');
+    } catch (error) {
+        console.error('Error saving sound preferences:', error);
+    }
+}
+
+// Get player's sound preference
+function getPlayerSoundPreference(username) {
+    const preference = soundPreferences.get(username);
+    return preference ? preference.soundEnabled : false; // Default to sound off
+}
+
+// Set player's sound preference
+async function setPlayerSoundPreference(username, soundEnabled) {
+    soundPreferences.set(username, {
+        soundEnabled: soundEnabled,
+        lastUpdated: new Date().toISOString(),
+        username: username
+    });
+    
+    // Save to file for persistence
+    await saveSoundPreferences();
+    
+    console.log(`Sound preference updated for ${username}: ${soundEnabled}`);
+}
 /*
     Kill messages e.g. player1 killed player2
     Leaderboard updates
 */
+
 function sendToClients(session, message, sendToPlayers, sendToSpectators) {
     if (sendToPlayers) {
         for (let username in session.players) {
@@ -270,6 +320,14 @@ wss.on("connection", (ws, req) => {
             }
         };
 
+
+        // Send the player their current sound preference when they connect
+        const currentSoundPreference = getPlayerSoundPreference(username);
+        ws.send(JSON.stringify({
+            type: "soundPreference",
+            soundEnabled: currentSoundPreference
+        }));
+
         // send player joined message
         sendToClients(
             session,
@@ -291,7 +349,7 @@ wss.on("connection", (ws, req) => {
             true
         );
 
-        ws.on("message", (message) => {
+        ws.on("message", async (message) => {
             try {
                 message = JSON.parse(message);
             } catch (error) {
@@ -395,6 +453,63 @@ wss.on("connection", (ws, req) => {
         console.warn(`Invalid coordinates from ${username}: ${latitude}, ${longitude}`);
     }
 }
+       //  Handle sound preference updates
+            else if (type === "soundPreference") {
+                const { soundEnabled } = message;
+                
+                if (typeof soundEnabled === 'boolean') {
+                    try {
+                        await setPlayerSoundPreference(username, soundEnabled);
+                        
+                        // Confirm the preference change back to the player
+                        ws.send(JSON.stringify({
+                            type: "soundPreferenceUpdated",
+                            soundEnabled: soundEnabled,
+                            success: true
+                        }));
+                        
+                        // Optional: Notify other players in the session about the sound preference change
+                        // (you can remove this if you don't want other players to see sound preferences)
+                        sendToClients(
+                            session,
+                            JSON.stringify({
+                                type: "playerSoundPreferenceChanged",
+                                username: username,
+                                soundEnabled: soundEnabled
+                            }),
+                            true,
+                            false // Don't send to spectators
+                        );
+                        
+                    } catch (error) {
+                        console.error(`Error saving sound preference for ${username}:`, error);
+                        
+                        ws.send(JSON.stringify({
+                            type: "soundPreferenceUpdated",
+                            soundEnabled: soundEnabled,
+                            success: false,
+                            error: "Failed to save preference"
+                        }));
+                    }
+                } else {
+                    console.warn(`Invalid sound preference from ${username}: ${soundEnabled}`);
+                    
+                    ws.send(JSON.stringify({
+                        type: "soundPreferenceUpdated",
+                        soundEnabled: soundEnabled,
+                        success: false,
+                        error: "Invalid sound preference value"
+                    }));
+                }
+            }
+            // NEW: Handle sound preference requests (when player wants to know their current preference)
+            else if (type === "getSoundPreference") {
+                const currentPreference = getPlayerSoundPreference(username);
+                ws.send(JSON.stringify({
+                    type: "soundPreference",
+                    soundEnabled: currentPreference
+                }));
+            }
         });
 
         ws.on("close", () => {
@@ -454,7 +569,7 @@ function handleHit(session, player, color, weapon) {
     if(!target || target.health <= 10 || target.activePowerups.invincibility > 0) return; // for health
 
     target.health = Math.max(0, target.health - 10); // decrease health by 10 on each hit
-    player.health = Math.min(100, player.health + 10); // increase health by 5 on each hit, max 100
+    player.health = Math.min(100, player.health + 10); // increase health by 10 on each hit, max 100
 
     // update points
     if (player.activePowerups.instakill > 0) {
@@ -522,6 +637,7 @@ function handleHit(session, player, color, weapon) {
 function start(port) {
     server.listen(port, () => {
         console.info(`WebSocket server running on port ${port}`);
+        console.info('Sound preferences system initialized');
     });
 }
 
