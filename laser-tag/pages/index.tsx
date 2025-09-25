@@ -4,20 +4,11 @@ import { useRouter } from "next/router";
 export default function LandingPage() {
   const [gameCode, setGameCode] = useState("");
   const [username, setUsername] = useState("");
-  //const navigate = useNavigate();
-  const router = useRouter()
+  const router = useRouter();
 
-  //const { state } = useLocation();
-  // Access query parameters (equivalent to useLocation().state in react-router-dom)
+  // Access query parameters
   const { gameCode: queryGameCode, username: queryUsername } = router.query;
 
-  
-  //useEffect(() => {
-  //  if (state) {
-  //    setGameCode(state.gameCode || "");
-  //    setUsername(state.username || "");
-  //  }
-  //}, [state]);
   useEffect(() => {
     // Set gameCode and username from query parameters if they exist
     if (queryGameCode && typeof queryGameCode === "string") {
@@ -28,18 +19,13 @@ export default function LandingPage() {
     }
   }, [queryGameCode, queryUsername]);
 
-  const isValidCode = (Code:string) => Code.length === 4;
+  const isValidCode = (Code: string) => Code.length === 4;
 
   const goToCalibration = () => {
     if (!isValidCode(gameCode)) {
       alert("Please enter a valid 4-letter game code.");
       return;
     }
-    //navigate("/calibration", {
-    //  state: {
-    //    gameCode,
-    //  },
-    //});
     router.push({
       pathname: "/calibration",
       query: { gameCode },
@@ -51,13 +37,19 @@ export default function LandingPage() {
       alert("Please enter a valid 4-letter game code.");
       return;
     }
-    //navigate("/spectator_stream", {
-    //  state: {
-    //    gameCode,
-    //  },
-    //});
     router.push({
       pathname: "/spectator_stream",
+      query: { gameCode },
+    });
+  };
+
+  const joinTeam = () => {
+    if (!isValidCode(gameCode)) {
+      alert("Please enter a valid 4-letter game code.");
+      return;
+    }
+    router.push({
+      pathname: "/TeamCalibration",
       query: { gameCode },
     });
   };
@@ -174,10 +166,14 @@ export default function LandingPage() {
               color: "#fff",
               transition: "background-color 0.3s",
             }}
-            onMouseOver={(e) => {const target = e.target as HTMLButtonElement;
-              target.style.backgroundColor = "#00aaff"}}
-            onMouseOut={(e) => {const target = e.target as HTMLButtonElement;
-              target.style.backgroundColor = "#00bfff"}}
+            onMouseOver={(e) => {
+              const target = e.target as HTMLButtonElement;
+              target.style.backgroundColor = "#00aaff";
+            }}
+            onMouseOut={(e) => {
+              const target = e.target as HTMLButtonElement;
+              target.style.backgroundColor = "#00bfff";
+            }}
           >
             Join as Player
           </button>
@@ -194,12 +190,40 @@ export default function LandingPage() {
               color: "#fff",
               transition: "background-color 0.3s",
             }}
-            onMouseOver={(e) => {const target = e.target as HTMLButtonElement;
-               target.style.backgroundColor = "#666"}}
-            onMouseOut={(e) => { const target = e.target as HTMLButtonElement;
-              target.style.backgroundColor = "#888"}}
+            onMouseOver={(e) => {
+              const target = e.target as HTMLButtonElement;
+              target.style.backgroundColor = "#666";
+            }}
+            onMouseOut={(e) => {
+              const target = e.target as HTMLButtonElement;
+              target.style.backgroundColor = "#888";
+            }}
           >
             Join as Spectator
+          </button>
+
+          <button
+            onClick={joinTeam}
+            style={{
+              padding: "0.75rem 1.5rem",
+              fontSize: "1rem",
+              borderRadius: "5px",
+              backgroundColor: "#ff4500",
+              border: "none",
+              cursor: "pointer",
+              color: "#fff",
+              transition: "background-color 0.3s",
+            }}
+            onMouseOver={(e) => {
+              const target = e.target as HTMLButtonElement;
+              target.style.backgroundColor = "#cc3700";
+            }}
+            onMouseOut={(e) => {
+              const target = e.target as HTMLButtonElement;
+              target.style.backgroundColor = "#ff4500";
+            }}
+          >
+            Join Team
           </button>
         </div>
       </div>

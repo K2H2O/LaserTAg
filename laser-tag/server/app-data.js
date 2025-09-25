@@ -35,13 +35,14 @@ const exampleSession = {
   },
 };
 
-function createSession(id) {
+function createSession(id, mode = "solo") {
   const session = {
     id,
     state: "lobby",
     admin: null,
     persistTime: SESSION_PERSIST_TIME,
     players: {},
+    teams: mode === "teams" ? {} : undefined,
     spectators: {},
     latestFrames: {},
   };
