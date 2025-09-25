@@ -1,25 +1,31 @@
 /* global cv */
 import { useEffect, useRef, useState } from "react";
-//import { useLocation, useNavigate } from "react-router-dom";
 import { useRouter } from "next/router";
 import * as tf from "@tensorflow/tfjs";
 import * as poseDetection from "@tensorflow-models/pose-detection";
 import { Keypoint } from "@tensorflow-models/pose-detection";
 import "@tensorflow/tfjs-backend-webgl";
 
-interface Player 
-  {
-    username : string ,
-    color : string,
-    points : number,
-    hitsGiven : number,
-    hitsTaken : number,
-  }
+interface Player {
+  username: string;
+  color: string;
+  points: number;
+  hitsGiven: number;
+  hitsTaken: number;
+}
 
-  interface CanvasWithHitData extends HTMLCanvasElement 
-  { isPersonCentered: boolean; modeColor: string; }
+interface Team {
+  teamId: number;
+  players: Player[];
+  score: number; // Sum of points of all players in the team
+}
 
-export default function CameraView() {
+interface CanvasWithHitData extends HTMLCanvasElement {
+  isPersonCentered: boolean;
+  modeColor: string;
+}
+
+export default function TeamCameraView() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<CanvasWithHitData>(null);
   const logRef = useRef(null);
@@ -40,21 +46,31 @@ export default function CameraView() {
 
   // Extract URL state params
   const router = useRouter();
-  const { username, gameCode, color } = router.query;
+  const { username, gameCode, color, teamId } = router.query;
 
-  // Leaderboard state
-  const [leaderboardData, setLeaderboardData] = useState<Player[]>([]);
-  const sortedPlayers = [...leaderboardData]
-    .sort((a, b) => b.points - a.points)
+  // Leaderboard state (now team-based)
+  const [leaderboardData, setLeaderboardData] = useState<Team[]>([]);
+  
+  // Derived data for leaderboard display
+  const sortedTeams = [...leaderboardData]
+    .sort((a, b) => b.score - a.score)
     .slice(0, 3);
-
-  const currentPlayer = leaderboardData.find((p) => p.username === username);
+  const currentPlayer = leaderboardData
+    .flatMap(team => team.players)
+    .find((p) => p.username === username);
   const isDead = currentPlayer?.points === 0;
+
+  // Find player with most hits taken and highest hits given
+  const allPlayers = leaderboardData.flatMap(team => team.players);
+  const mostHitsTaken = allPlayers.reduce((max, p) => 
+    p.hitsTaken > (max?.hitsTaken || 0) ? p : max, null as Player | null);
+  const highestHitsGiven = allPlayers.reduce((max, p) => 
+    p.hitsGiven > (max?.hitsGiven || 0) ? p : max, null as Player | null);
 
   // WebSocket ref
   type AudioKey = "pistol" | "shotgun" | "sniper" | "ouch" | "powerup";
   const socketRef = useRef<WebSocket | null>(null);
-  const audioRef= useRef<Record<AudioKey, HTMLAudioElement>| null>(null);
+  const audioRef = useRef<Record<AudioKey, HTMLAudioElement> | null>(null);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -70,8 +86,7 @@ export default function CameraView() {
       Object.entries(audioFiles).forEach(([key, src]) => {
         try {
           const audio = new Audio(src);
-          audio.preload = "auto"; // Preload for better mobile performance
-          
+          audio.preload = "auto";
           audioRef.current![key as AudioKey] = audio;
           audio.onerror = () => console.error(`Failed to load audio: ${src}`);
         } catch (error) {
@@ -83,13 +98,12 @@ export default function CameraView() {
 
   // Connect to WebSocket & listen for game updates
   useEffect(() => {
-    console.log(username, gameCode, color);
-    if (username == null || gameCode == null || color == null) {
-      console.warn("Missing username, gameCode or color");
+    if (username == null || gameCode == null || color == null || teamId == null) {
+      console.warn("Missing username, gameCode, color, or teamId");
       return;
     }
     const socket = new WebSocket(
-      `wss://bbd-lasertag.onrender.com/session/${gameCode}?username=${username}&color=${color}`
+      `wss://bbd-lasertag.onrender.com/session/${gameCode}?username=${username}&color=${color}&teamId=${teamId}`
     );
     socketRef.current = socket;
 
@@ -97,17 +111,22 @@ export default function CameraView() {
     socket.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === "gameUpdate") {
-        const { players, timeLeft } = data;
+        const { teams, timeLeft } = data;
+        // Calculate team scores client-side
+        const teamsWithScores = teams.map((team: Team) => ({
+          ...team,
+          score: team.players.reduce((sum: number, p: Player) => sum + p.points, 0)
+        }));
         setGameTimeString(
           `${String(Math.floor(timeLeft / 60)).padStart(2, "0")}:${String(
             timeLeft % 60
           ).padStart(2, "0")}`
         );
-        setLeaderboardData(players);
+        setLeaderboardData(teamsWithScores);
         if (timeLeft === 0) {
-         router.push({
+          router.push({
             pathname: "/PlayerLeaderboard",
-            query: { players: JSON.stringify(players) },
+            query: { teams: JSON.stringify(teamsWithScores) },
           });
         }
       }
@@ -137,7 +156,6 @@ export default function CameraView() {
             .catch((e) => console.warn("Powerup sound failed:", e));
         }
 
-        // Clear after duration
         setTimeout(() => {
           setActivePowerup(null);
         }, duration * 1000);
@@ -147,11 +165,10 @@ export default function CameraView() {
     socket.onerror = (e) => console.error("WebSocket error", e);
 
     return () => socket.close();
-  }, []);
+  }, [username, gameCode, color, teamId]);
 
   useEffect(() => {
     async function loadDetector() {
-      // Set backend first (optional, but recommended)
       await tf.setBackend("webgl");
       await tf.ready();
 
@@ -168,7 +185,7 @@ export default function CameraView() {
   }, []);
 
   useEffect(() => {
-    let animationFrameId:number;
+    let animationFrameId: number;
 
     async function detect() {
       try {
@@ -192,8 +209,8 @@ export default function CameraView() {
     };
   }, []);
 
-  // Map RGB to closest CSS color name (used for hit color detection)
-  function getClosestColorName(rgbString:string) {
+  // Map RGB to closest CSS color name
+  function getClosestColorName(rgbString: string) {
     const cssColors = {
       white: [255, 255, 255],
       black: [0, 0, 0],
@@ -208,8 +225,8 @@ export default function CameraView() {
     };
     const matches = rgbString.match(/\d+/g);
     if (!matches || matches.length !== 3) {
-    console.warn(`Invalid RGB string: ${rgbString}, defaulting to aqua`);
-    return "aqua"; // Fallback for invalid input
+      console.warn(`Invalid RGB string: ${rgbString}, defaulting to aqua`);
+      return "aqua";
     }
     const [r, g, b] = matches.map(Number);
     let closestName = "";
@@ -227,8 +244,8 @@ export default function CameraView() {
     return closestName;
   }
 
-  // Called when a hit is detected; sends hit info to server
-  function hitDetected(targetColor:string, msg:string) {
+  // Called when a hit is detected
+  function hitDetected(targetColor: string, msg: string) {
     if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
       console.warn("WebSocket not open; hit not sent");
       return;
@@ -238,23 +255,21 @@ export default function CameraView() {
       weapon: gunType,
       shape: msg,
       color: targetColor,
+      teamId: teamId, // Include teamId for server-side processing
     };
     socketRef.current.send(JSON.stringify(hitPayload));
-    if (logRef.current) {
-      //logRef.current.textContent = `Hit sent: ${targetColor} ${msg} with ${gunType}`;
-    }
   }
 
   // Check if torso is centered and trigger hit detection
-  function checkHit(canvas:CanvasWithHitData) {
+  function checkHit(canvas: CanvasWithHitData) {
     if (canvas.isPersonCentered) {
       const colorName = getClosestColorName(canvas.modeColor);
       hitDetected(colorName, "torso in center");
     }
   }
 
-  // Process video frame once to detect pose & torso color
-  async function processVideoOnce(video:HTMLVideoElement, canvas:CanvasWithHitData, detector:poseDetection.PoseDetector) {
+  // Process video frame for pose detection
+  async function processVideoOnce(video: HTMLVideoElement, canvas: CanvasWithHitData, detector: poseDetection.PoseDetector) {
     const width = video.videoWidth;
     const height = video.videoHeight;
     if (!width || !height) return;
@@ -263,29 +278,24 @@ export default function CameraView() {
     canvas.height = height;
     const ctx = canvas.getContext("2d");
 
-    if(!ctx)
-    {
-        console.error("context is not available");
-        return;
+    if (!ctx) {
+      console.error("context is not available");
+      return;
     }
-    // Draw current video frame
     ctx.clearRect(0, 0, width, height);
     ctx.drawImage(video, 0, 0, width, height);
 
     if (!detector) return;
 
-    // Estimate pose(s)
     const poses = await detector.estimatePoses(video);
     if (poses.length === 0) return;
 
     const keypoints = poses[0].keypoints;
 
-    // Helper to get a keypoint by name
-    function getKeypoint(name:string) {
+    function getKeypoint(name: string) {
       return keypoints.find((k) => k.name === name);
     }
 
-    // Get shoulder and hip points
     const ls = getKeypoint("left_shoulder");
     const rs = getKeypoint("right_shoulder");
     const lh = getKeypoint("left_hip");
@@ -293,10 +303,8 @@ export default function CameraView() {
 
     if (!ls || !rs || !lh || !rh) return;
 
-    // Draw torso polygon connecting these four points
     const points = [ls, rs, rh, lh];
 
-    // Draw filled torso polygon with translucent fill color
     ctx.beginPath();
     ctx.moveTo(points[0].x, points[0].y);
     for (let i = 1; i < points.length; i++) {
@@ -304,19 +312,14 @@ export default function CameraView() {
     }
     ctx.closePath();
 
-    // Sample the mode color inside the rectangle formed by shoulders
-    function getModeColorFromPoints(p1:Keypoint,p2:Keypoint) {
+    function getModeColorFromPoints(p1: Keypoint, p2: Keypoint) {
       const minX = Math.floor(Math.min(p1.x, p2.x));
       const minY = Math.floor(Math.min(p1.y, p2.y));
       const width = Math.floor(Math.abs(p1.x - p2.x));
       const height = Math.floor(Math.abs(p1.y - p2.y));
       if (width < 1 || height < 1) return "aqua";
-        
-      if(!ctx)
-    {
-        console.error("context is not available");
-        return;
-    }
+
+      if (!ctx) return;
       const imgData = ctx.getImageData(minX, minY, width, height);
       const colorCount = new Map();
 
@@ -349,7 +352,6 @@ export default function CameraView() {
     ctx.lineWidth = 3;
     ctx.stroke();
 
-    // Draw keypoints as small circles (only if score > 0.5)
     keypoints.forEach((kp) => {
       if (kp.score !== undefined && kp.score > 0.5) {
         ctx.beginPath();
@@ -359,7 +361,6 @@ export default function CameraView() {
       }
     });
 
-    // Draw a permanent red dot in center of canvas (reticle)
     const centerX = width / 2;
     const centerY = height / 2;
     ctx.beginPath();
@@ -367,9 +368,7 @@ export default function CameraView() {
     ctx.fillStyle = "red";
     ctx.fill();
 
-    // Check if person is standing roughly centered:
-    // We consider centered if centerX,centerY lies inside torso polygon (simple point-in-polygon)
-    function pointInPolygon(point:[number,number],vs : Array<{ x: number; y: number }>) {
+    function pointInPolygon(point: [number, number], vs: Array<{ x: number; y: number }>) {
       let x = point[0],
         y = point[1];
       let inside = false;
@@ -388,13 +387,12 @@ export default function CameraView() {
 
     const isCentered = pointInPolygon([centerX, centerY], points);
 
-    // Attach to canvas for external use (e.g., button click)
     canvas.isPersonCentered = isCentered;
     canvas.modeColor = modeColor;
   }
 
   const handleShoot = () => {
-    if (isReloading || isDead) return; // 🔒 Don't shoot if dead or reloading
+    if (isReloading || isDead) return;
     if (ammo <= 0) {
       console.log("🔫 No ammo left — can't shoot");
       return;
@@ -416,8 +414,7 @@ export default function CameraView() {
     if (canvasRef.current) checkHit(canvasRef.current);
   };
 
-  // Gun selection handler
-  const selectGun = (type:"pistol" | "shotgun" | "sniper") => {
+  const selectGun = (type: "pistol" | "shotgun" | "sniper") => {
     setGunType(type);
     setAmmo(gunConfig[type].ammo);
     setIsReloading(false);
@@ -429,7 +426,6 @@ export default function CameraView() {
     }
   };
 
-  // Reload gun
   const reload = () => {
     if (isReloading) return;
     setIsReloading(true);
@@ -439,13 +435,12 @@ export default function CameraView() {
     }, gunConfig[gunType].reloadTime);
   };
 
-  // Disable zoom gestures unless zoomEnabled
   useEffect(() => {
     if (zoomEnabled) return;
 
-    const preventZoom = (e:Event) => e.preventDefault();
+    const preventZoom = (e: Event) => e.preventDefault();
     let lastTouch = 0;
-    const doubleTapBlocker = (e:Event) => {
+    const doubleTapBlocker = (e: Event) => {
       const now = Date.now();
       if (now - lastTouch <= 300) e.preventDefault();
       lastTouch = now;
@@ -462,7 +457,6 @@ export default function CameraView() {
     };
   }, [zoomEnabled]);
 
-  // Start camera
   useEffect(() => {
     async function startCamera() {
       try {
@@ -476,18 +470,17 @@ export default function CameraView() {
       } catch (err) {
         console.error("Camera error:", err);
         if (err instanceof Error) {
-            alert(`Camera access denied. Please allow permissions.\n\nError: ${err.message}`);
+          alert(`Camera access denied. Please allow permissions.\n\nError: ${err.message}`);
         } else {
-            alert("Camera access denied. Please allow permissions.\n\nUnknown error occurred.");
+          alert("Camera access denied. Please allow permissions.\n\nUnknown error occurred.");
         }
       }
     }
     startCamera();
   }, []);
 
-  // Send camera frames periodically to server via WebSocket
   useEffect(() => {
-    let intervalId:NodeJS.Timeout;
+    let intervalId: NodeJS.Timeout;
 
     const sendFrames = () => {
       const video = videoRef.current;
@@ -500,11 +493,10 @@ export default function CameraView() {
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
           const ctx = canvas.getContext("2d");
-          if(!ctx)
-        {
+          if (!ctx) {
             console.error("context is not available");
             return;
-        }
+          }
           ctx.drawImage(video, 0, 0);
           const frame = canvas.toDataURL("image/jpeg", 0.5);
 
@@ -512,12 +504,12 @@ export default function CameraView() {
             JSON.stringify({
               type: "cameraFrame",
               username,
+              teamId,
               frame,
             })
           );
         }, 100);
       } else {
-        // Wait for socket to open then start
         const waitForSocket = setInterval(() => {
           if (socket.readyState === WebSocket.OPEN) {
             clearInterval(waitForSocket);
@@ -529,7 +521,7 @@ export default function CameraView() {
 
     sendFrames();
     return () => clearInterval(intervalId);
-  }, [username]);
+  }, [username, teamId]);
 
   return (
     <div
@@ -683,10 +675,10 @@ export default function CameraView() {
                 cursor: isReloading ? "not-allowed" : "pointer",
                 transition: "transform 0.1s ease-in-out",
               }}
-              onTouchStart={(e:React.TouchEvent<HTMLImageElement>|React.MouseEvent<HTMLImageElement>) => {
+              onTouchStart={(e: React.TouchEvent<HTMLImageElement> | React.MouseEvent<HTMLImageElement>) => {
                 e.currentTarget.style.transform = "scale(0.95)";
               }}
-              onTouchEnd={(e:React.TouchEvent<HTMLImageElement>|React.MouseEvent<HTMLImageElement>) => {
+              onTouchEnd={(e: React.TouchEvent<HTMLImageElement> | React.MouseEvent<HTMLImageElement>) => {
                 e.currentTarget.style.transform = "scale(1)";
               }}
             />
@@ -792,7 +784,7 @@ export default function CameraView() {
           {gameTimeString}
         </div>
 
-        {/* Leaderboard */}
+        {/* Team Leaderboard */}
         <div
           style={{
             position: "absolute",
@@ -803,32 +795,45 @@ export default function CameraView() {
             borderRadius: "8px",
             maxHeight: "50vh",
             overflowY: "auto",
-            width: "100px",
+            width: "180px",
             color: "white",
             fontSize: "14px",
             zIndex: 5,
           }}
         >
           <h3 style={{ margin: "0 0 10px 0", textAlign: "center" }}>
-            Leaderboard
+            Team Leaderboard
           </h3>
-          {sortedPlayers.map(({ username, points }, i) => (
+          {sortedTeams.map((team, i) => (
             <div
-              key={username}
+              key={team.teamId}
               style={{
                 backgroundColor:
                   i === 0 ? "gold" : i === 1 ? "silver" : "#cd7f32",
                 fontWeight: i === 0 ? "bold" : "normal",
-                marginBottom: "6px",
-                padding: "4px",
+                marginBottom: "10px",
+                padding: "6px",
                 borderRadius: "4px",
               }}
             >
-              <div>
-                #{i + 1} {username} - {points}
-              </div>
+              <div>Team {team.teamId} - Score: {team.score}</div>
+              {team.players.map((player) => (
+                <div key={player.username} style={{ marginLeft: "10px", fontSize: "12px" }}>
+                  {player.username}: {player.points} pts
+                </div>
+              ))}
             </div>
           ))}
+          {mostHitsTaken && (
+            <div style={{ marginTop: "10px", fontStyle: "italic" }}>
+              Most Hits Taken: {mostHitsTaken.username} ({mostHitsTaken.hitsTaken})
+            </div>
+          )}
+          {highestHitsGiven && (
+            <div style={{ marginTop: "5px", fontStyle: "italic" }}>
+              Most Hits Given: {highestHitsGiven.username} ({highestHitsGiven.hitsGiven})
+            </div>
+          )}
         </div>
       </div>
     </div>
