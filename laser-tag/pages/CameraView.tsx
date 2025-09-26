@@ -1037,7 +1037,7 @@ const Minimap = () => {
                 {Array.from({ length: ammo }).map((_, i) => (
                   <img
                     key={i}
-                    src="/bullet.png"
+                    src="/images/bullet.png"
                     alt="Bullet"
                     style={{ width: "40px", height: "40px" }}
                   />
