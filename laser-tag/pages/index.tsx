@@ -22,9 +22,11 @@ export default function LandingPage() {
     }
 
     // Load sound preference from localStorage
-    const savedSoundPreference = localStorage.getItem("gameSoundEnabled");
-    if (savedSoundPreference !== null) {
-      setIsSoundEnabled(JSON.parse(savedSoundPreference));
+    if (typeof window !== "undefined") {
+      const savedSoundPreference = localStorage.getItem("gameSoundEnabled");
+      if (savedSoundPreference !== null) {
+        setIsSoundEnabled(JSON.parse(savedSoundPreference));
+      }
     }
 
     // Initialize audio
@@ -33,8 +35,8 @@ export default function LandingPage() {
         audioRef.current = new Audio("/audio/games_sound.wav");
         if (audioRef.current) {
           audioRef.current.loop = true;
-          audioRef.current.volume = 0.5; // Set volume to 50%
-          audioRef.current.load(); // Load the audio file
+          audioRef.current.volume = 0.5;
+          audioRef.current.load();
         }
       } catch (error) {
         console.error("Failed to initialize audio:", error);
@@ -54,33 +56,41 @@ export default function LandingPage() {
     };
   }, [queryGameCode, queryUsername]);
 
-  useEffect(() => {
-    // Handle sound playing based on isSoundEnabled state
-    if (audioRef.current) {
+  // Handle audio playback - only after user interaction
+  const handleAudioToggle = async () => {
+    if (!audioRef.current) return;
+
+    try {
       if (isSoundEnabled && !isPlaying) {
-        audioRef.current.play().then(() => {
-          setIsPlaying(true);
-        }).catch((error) => {
-          console.error("Audio play failed:", error);
-          setIsSoundEnabled(false); // Fallback to disabled sound
-        });
+        await audioRef.current.play();
+        setIsPlaying(true);
       } else if (!isSoundEnabled && isPlaying) {
-        try {
-          audioRef.current.pause();
-          setIsPlaying(false);
-        } catch (error) {
-          console.error("Error pausing audio:", error);
-        }
+        audioRef.current.pause();
+        setIsPlaying(false);
       }
+    } catch (error) {
+      console.error("Audio control failed:", error);
+      // Reset sound state if audio fails
+      setIsSoundEnabled(false);
+      setIsPlaying(false);
     }
-  }, [isSoundEnabled, isPlaying]);
+  };
+
+  // Handle audio state changes
+  useEffect(() => {
+    if (audioRef.current) {
+      handleAudioToggle();
+    }
+  }, [isSoundEnabled]);
 
   const toggleSound = async () => {
     const newSoundState = !isSoundEnabled;
     setIsSoundEnabled(newSoundState);
     
     // Save preference to localStorage
-    localStorage.setItem("gameSoundEnabled", JSON.stringify(newSoundState));
+    if (typeof window !== "undefined") {
+      localStorage.setItem("gameSoundEnabled", JSON.stringify(newSoundState));
+    }
     
     // Send preference to backend (optional)
     try {
@@ -99,17 +109,22 @@ export default function LandingPage() {
     }
   };
 
-  const isValidCode = (Code: string) => Code.length === 4;
+  const isValidCode = (code: string) => code.length === 4;
 
   const goToCalibration = () => {
     if (!isValidCode(gameCode)) {
       alert("Please enter a valid 4-letter game code.");
       return;
     }
-    router.push({
-      pathname: "/calibration",
-      query: { gameCode, soundEnabled: isSoundEnabled.toString() },
-    });
+
+    try {
+      router.push({
+        pathname: "/calibration",
+        query: { gameCode, soundEnabled: isSoundEnabled.toString() },
+      });
+    } catch (error) {
+      console.error("Navigation error:", error);
+    }
   };
 
   const joinSpectatorStreaming = () => {
@@ -117,10 +132,15 @@ export default function LandingPage() {
       alert("Please enter a valid 4-letter game code.");
       return;
     }
-    router.push({
-      pathname: "/spectator_stream",
-      query: { gameCode, soundEnabled: isSoundEnabled.toString() },
-    });
+    
+    try {
+      router.push({
+        pathname: "/spectator_stream",
+        query: { gameCode, soundEnabled: isSoundEnabled.toString() },
+      });
+    } catch (error) {
+      console.error("Spectator navigation error:", error);
+    }
   };
 
   const joinTeam = () => {
@@ -128,10 +148,15 @@ export default function LandingPage() {
       alert("Please enter a valid 4-letter game code.");
       return;
     }
-    router.push({
-      pathname: "/TeamCalibration",
-      query: { gameCode, soundEnabled: isSoundEnabled.toString() },
-    });
+    
+    try {
+      router.push({
+        pathname: "/TeamCalibration",
+        query: { gameCode, soundEnabled: isSoundEnabled.toString() },
+      });
+    } catch (error) {
+      console.error("Team navigation error:", error);
+    }
   };
 
   return (
