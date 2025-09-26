@@ -282,7 +282,7 @@ export default function TeamCalibration() {
 
     // Check if team has space
     if (!canJoinTeam(teamId, typeof gameCode === "string" ? gameCode : "")) {
-      alert(`Team ${teamId} (${detectedColor}) is full (4 players). Please wear a shirt with a different color.`);
+      alert(`Team ${teamId} (${detectedColor}) is full (8 players). Please wear a shirt with a different color.`);
       return;
     }
 
@@ -298,10 +298,10 @@ export default function TeamCalibration() {
     router.push({
       pathname: "/TeamLobby",
       query: {
+        gameCode: gameCode,
+        username: username.trim(),
         color: detectedColor,
         teamId: teamId.toString(),
-        username: username.trim(),
-        gameCode: gameCode,
       },
     });
   } catch (error) {

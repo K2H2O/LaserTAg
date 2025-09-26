@@ -1,6 +1,8 @@
 /* global cv */
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/router";
+import { Socket } from "socket.io-client";
+import { initializeSocket, closeSocket } from "../client/src/utils/socket";
 import * as tf from "@tensorflow/tfjs";
 import * as poseDetection from "@tensorflow-models/pose-detection";
 import { Keypoint } from "@tensorflow-models/pose-detection";
@@ -32,7 +34,7 @@ export default function TeamCameraView() {
   const detectorRef = useRef<poseDetection.PoseDetector | null>(null);
   const [gunType, setGunType] = useState<"pistol" | "shotgun" | "sniper">("pistol");
   const [zoomEnabled, setZoomEnabled] = useState(false);
-  const [activePowerup, setActivePowerup] = useState(null);
+  const [activePowerup, setActivePowerup] = useState<string | null>(null);
 
   // Game state
   const [gameTimeString, setGameTimeString] = useState("00:00");
@@ -67,9 +69,9 @@ export default function TeamCameraView() {
   const highestHitsGiven = allPlayers.reduce((max, p) => 
     p.hitsGiven > (max?.hitsGiven || 0) ? p : max, null as Player | null);
 
-  // WebSocket ref
+  // Socket.IO ref
   type AudioKey = "pistol" | "shotgun" | "sniper" | "ouch" | "powerup";
-  const socketRef = useRef<WebSocket | null>(null);
+  const socketRef = useRef<Socket | null>(null);
   const audioRef = useRef<Record<AudioKey, HTMLAudioElement> | null>(null);
 
   useEffect(() => {
@@ -96,75 +98,88 @@ export default function TeamCameraView() {
     }
   }, []);
 
-  // Connect to WebSocket & listen for game updates
+  // Initialize Socket.IO connection & listen for game updates
   useEffect(() => {
     if (username == null || gameCode == null || color == null || teamId == null) {
       console.warn("Missing username, gameCode, color, or teamId");
       return;
     }
-    const socket = new WebSocket(
-      `wss://laser-legion.onrender.com/session/${gameCode}?username=${username}&color=${color}&teamId=${teamId}`
-    );
+    
+    // Initialize Socket.IO connection
+    const socket = initializeSocket(gameCode as string, username as string, color as string, teamId as string);
     socketRef.current = socket;
 
-    socket.onopen = () => console.log("Connected to WebSocket");
-    socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === "gameUpdate") {
-        const { teams, timeLeft } = data;
-        // Calculate team scores client-side
-        const teamsWithScores = teams.map((team: Team) => ({
-          ...team,
-          score: team.players.reduce((sum: number, p: Player) => sum + p.points, 0)
-        }));
-        setGameTimeString(
-          `${String(Math.floor(timeLeft / 60)).padStart(2, "0")}:${String(
-            timeLeft % 60
-          ).padStart(2, "0")}`
-        );
-        setLeaderboardData(teamsWithScores);
+    // Handle connection events
+    socket.on('connect', () => console.log("🔗 Connected to game server"));
+    socket.on('disconnect', () => console.log("❌ Disconnected from game server"));
+
+    // Handle game events
+    socket.on('gameUpdate', (data: { teams: Team[], timeLeft: number }) => {
+      const { teams, timeLeft } = data;
+      // Calculate team scores client-side
+      const teamsWithScores = teams.map((team: Team) => ({
+        ...team,
+        score: team.players.reduce((sum: number, p: Player) => sum + p.points, 0)
+      }));
+      setGameTimeString(
+        `${String(Math.floor(timeLeft / 60)).padStart(2, "0")}:${String(
+          timeLeft % 60
+        ).padStart(2, "0")}`
+      );
+      setLeaderboardData(teamsWithScores);
         if (timeLeft === 0) {
           router.push({
             pathname: "/PlayerLeaderboard",
-            query: { teams: JSON.stringify(teamsWithScores) },
+            query: { username, gameCode, color, teamId },
           });
         }
-      }
-      if (data.type === "hit") {
+    });
+
+    // Handle hit events
+    socket.on('hit', (data: { player: string, target: string, weapon: string }) => {
         const { player, target, weapon } = data;
         console.log(`🎯 ${player} hit ${target} with ${weapon}`);
 
         // If I am the one who got hit
         if (target === username) {
-          const ouch = audioRef.current?.ouch;
-          if (ouch) {
-            ouch.currentTime = 0;
-            ouch.play().catch((e) => console.warn("Ouch sound failed:", e));
-          }
+            const ouch = audioRef.current?.ouch;
+            if (ouch) {
+                ouch.currentTime = 0;
+                ouch.play().catch((e) => console.warn("Ouch sound failed:", e));
+            }
         }
-      }
-      if (data.type === "powerup") {
+    });
+
+    // Handle powerup events
+    socket.on('powerup', (data: { powerup: string, duration: number }) => {
         const { powerup, duration } = data;
         console.log(`⚡ Powerup received: ${powerup} for ${duration}s`);
         setActivePowerup(powerup);
 
         const powerupSound = audioRef.current?.powerup;
         if (powerupSound) {
-          powerupSound.currentTime = 0;
-          powerupSound
-            .play()
-            .catch((e) => console.warn("Powerup sound failed:", e));
+            powerupSound.currentTime = 0;
+            powerupSound.play().catch((e) => console.warn("Powerup sound failed:", e));
         }
 
-        setTimeout(() => {
-          setActivePowerup(null);
-        }, duration * 1000);
-      }
-    };
-    socket.onclose = () => console.log("WebSocket closed");
-    socket.onerror = (e) => console.error("WebSocket error", e);
+        setTimeout(() => setActivePowerup(null), duration * 1000);
+    });
 
-    return () => socket.close();
+    // Handle errors
+    socket.on('connect_error', (error: Error) => {
+        console.error("❌ Connection error:", error);
+    });
+
+    socket.on('error', (error: { message: string }) => {
+        console.error("❌ Socket error:", error);
+        alert(error.message || "An error occurred");
+    });
+
+    // Cleanup on component unmount
+    return () => {
+        closeSocket();
+        socketRef.current = null;
+    };
   }, [username, gameCode, color, teamId]);
 
   useEffect(() => {
@@ -246,18 +261,16 @@ export default function TeamCameraView() {
 
   // Called when a hit is detected
   function hitDetected(targetColor: string, msg: string) {
-    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
-      console.warn("WebSocket not open; hit not sent");
+    if (!socketRef.current?.connected) {
+      console.warn("Socket not connected; hit not sent");
       return;
     }
-    const hitPayload = {
-      type: "hit",
+    socketRef.current.emit('hit', {
       weapon: gunType,
       shape: msg,
       color: targetColor,
       teamId: teamId, // Include teamId for server-side processing
-    };
-    socketRef.current.send(JSON.stringify(hitPayload));
+    });
   }
 
   // Check if torso is centered and trigger hit detection
@@ -482,44 +495,43 @@ export default function TeamCameraView() {
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
 
-    const sendFrames = () => {
+    const sendFrame = () => {
       const video = videoRef.current;
       const socket = socketRef.current;
-      if (!video || !socket) return;
-
-      if (socket.readyState === WebSocket.OPEN) {
-        intervalId = setInterval(() => {
-          const canvas = document.createElement("canvas");
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          const ctx = canvas.getContext("2d");
-          if (!ctx) {
-            console.error("context is not available");
-            return;
-          }
-          ctx.drawImage(video, 0, 0);
-          const frame = canvas.toDataURL("image/jpeg", 0.5);
-
-          socket.send(
-            JSON.stringify({
-              type: "cameraFrame",
-              username,
-              teamId,
-              frame,
-            })
-          );
-        }, 100);
-      } else {
-        const waitForSocket = setInterval(() => {
-          if (socket.readyState === WebSocket.OPEN) {
-            clearInterval(waitForSocket);
-            sendFrames();
-          }
-        }, 100);
+      if (!video || !socket || !socket.connected) {
+        console.warn("Video or socket not ready");
+        return;
       }
+
+      // Create canvas to capture video frame
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext("2d");
+      
+      if (!ctx) {
+        console.error("Canvas context not available");
+        return;
+      }
+
+      // Draw current video frame
+      ctx.drawImage(video, 0, 0);
+      
+      // Convert to low-quality JPEG to reduce bandwidth
+      const frame = canvas.toDataURL("image/jpeg", 0.5);
+
+      // Send frame using Socket.IO
+      socket.emit('cameraFrame', {
+        frame,
+        username,
+        teamId
+      });
     };
 
-    sendFrames();
+    // Send frames every 100ms
+    intervalId = setInterval(sendFrame, 100);
+
+    // Cleanup interval on unmount
     return () => clearInterval(intervalId);
   }, [username, teamId]);
 
