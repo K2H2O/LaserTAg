@@ -8,6 +8,7 @@ function attach(server) {
 
   wss.on("connection", (ws, req) => {
     const { pathname, query } = parse(req.url, true);
+    console.log("Incoming connection:", { pathname, query });
     const parts = pathname.split("/").filter(Boolean);
 
     if (parts.length < 2) {
@@ -16,12 +17,19 @@ function attach(server) {
     }
 
     const [mode, sessionId] = parts;
+    console.log("Mode and session:", { mode, sessionId });
 
     const isTeamMode = mode === "team-session";
     const isSoloMode = mode === "session";
 
     if (!isTeamMode && !isSoloMode) {
       ws.close(1000, "Unknown session type");
+      return;
+    }
+
+    // Ensure sessionId is a string (user-provided gameCode)
+    if (typeof sessionId !== "string") {
+      ws.close(1000, "Invalid session ID");
       return;
     }
 

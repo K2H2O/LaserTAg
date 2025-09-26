@@ -21,6 +21,8 @@ export default function TeamCalibration() {
     async function init() {
     try {
       await tf.ready();
+      
+      tf.setBackend('cpu');
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user" },
@@ -161,7 +163,7 @@ export default function TeamCalibration() {
     const teamSizes: { [key: string]: number } = teamSizesStr ? JSON.parse(teamSizesStr) : {};
     
     const currentSize = teamSizes[teamId] || 0;
-    if (currentSize >= 4) {
+    if (currentSize >= 8) {
       return false;
     }
     
@@ -173,7 +175,7 @@ export default function TeamCalibration() {
 
   async function renderLoop(detector: poseDetection.PoseDetector) {
     const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
+    const ctx = canvas?.getContext("2d",{willReadFrequently: true});
 
     const video = videoRef.current;
 
@@ -246,7 +248,7 @@ export default function TeamCalibration() {
     ctx.stroke();
   }
 
-  function capturePose() {
+  async function capturePose() {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
 
@@ -290,6 +292,9 @@ export default function TeamCalibration() {
     return;
   }
 
+    try {
+    
+
     router.push({
       pathname: "/TeamLobby",
       query: {
@@ -299,6 +304,10 @@ export default function TeamCalibration() {
         gameCode: gameCode,
       },
     });
+  } catch (error) {
+    console.error("Error sending game data", error);
+    alert("Failed to start a game session. Please try again.");
+  }
   }
 
   return (
@@ -361,7 +370,7 @@ export default function TeamCalibration() {
         ></video>
         <canvas
           ref={canvasRef}
-          style={{ maxWidth: "100%", height: "auto" }} // Ensure canvas scales
+          style={{ maxWidth: "100%", height: "auto" }}
         ></canvas>
       </div>
 

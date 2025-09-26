@@ -8,13 +8,13 @@ const app = express();
 const server = http.createServer(app);  // Create HTTP server with Express app
 
 // Mount REST routes
-app.use("/api/session", sessionRoutes);         // Solo sessions
-app.use("/api/team-session", teamSessionRoutes); // Team sessions
+app.use("/routes/session", sessionRoutes);         // Solo sessions
+app.use("/routes/team-session", teamSessionRoutes); // Team sessions
 
 // Attach WebSocket server to the same HTTP server
 websocket.attach(server);
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });

@@ -103,7 +103,7 @@ export default function TeamCameraView() {
       return;
     }
     const socket = new WebSocket(
-      `wss://bbd-lasertag.onrender.com/session/${gameCode}?username=${username}&color=${color}&teamId=${teamId}`
+      `wss://laser-legion.onrender.com/session/${gameCode}?username=${username}&color=${color}&teamId=${teamId}`
     );
     socketRef.current = socket;
 

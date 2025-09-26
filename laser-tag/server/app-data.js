@@ -4,11 +4,16 @@ const sessions = {};
 // sessions will be automatically removed when all player websocket connections have been closed
 
 function getUniqueSessionId() {
-  for (let i = 0; true; i++) {
-    if (!sessions[i]) {
-      return i;
-    }
-  }
+  // Generate a random 4-letter code if a string ID is needed
+  const characters = "abcdefghijklmnopqrstuvwxyz";
+  let newId;
+  do {
+    newId = Array(4)
+      .fill()
+      .map(() => characters.charAt(Math.floor(Math.random() * characters.length)))
+      .join("");
+  } while (sessions[newId]); // Ensure uniqueness
+  return newId;
 }
 
 const exampleSession = {
@@ -36,8 +41,13 @@ const exampleSession = {
 };
 
 function createSession(id, mode = "solo") {
+
+  let sessionId = id;
+  if (!sessionId || typeof sessionId !== "string" || sessionId.trim() === "") {
+    sessionId = getUniqueSessionId(); // Generate a new ID if none provided or invalid
+  }
   const session = {
-    id,
+    id: sessionId,
     state: "lobby",
     admin: null,
     persistTime: SESSION_PERSIST_TIME,
@@ -46,7 +56,7 @@ function createSession(id, mode = "solo") {
     spectators: {},
     latestFrames: {},
   };
-  sessions[id] = session;
+  sessions[sessionId] = session;
   return session;
 }
 

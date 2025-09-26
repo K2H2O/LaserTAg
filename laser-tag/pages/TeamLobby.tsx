@@ -35,6 +35,12 @@ export default function TeamLobby() {
       return;
     }
 
+    if (typeof gameCode !== "string" || !/^[a-z]{4}$/.test(gameCode)) {
+    console.warn("❌ Invalid gameCode:", gameCode);
+    alert("Invalid game code. Please use a 4-letter code.");
+    return;
+  }
+
     function connectWebSocket() {
       if (
         socketRef.current &&
@@ -48,14 +54,15 @@ export default function TeamLobby() {
         `🔄 Connecting to WebSocket (attempt ${reconnectAttempts.current + 1})`
       );
 
-      const socket = new WebSocket(
-        `wss://bbd-lasertag.onrender.com/team-session/${gameCode}?username=${username}&color=${color}&teamId=${teamId}`
-      );
+      const wsUrl = `ws://localhost:4000/team-session/${gameCode}?username=${username}&color=${color}&team=${teamId}`;
+      console.log("Attempting to connect to:", wsUrl); // Debug URL
+      const socket = new WebSocket(wsUrl);
       socketRef.current = socket;
 
       socket.onopen = () => {
         console.log("🔗 TeamLobby WebSocket connected");
         reconnectAttempts.current = 0;
+        
       };
 
       socket.onmessage = (event) => {
@@ -63,7 +70,7 @@ export default function TeamLobby() {
           const data = JSON.parse(event.data) as Message;
           console.log("TeamLobby message received:", data);
 
-          if (data.type === "TeamListUpdate") {
+          if (data.type === "playerListUpdate") {
             console.log("👥 Team list update:", data.teams);
 
             if (data.teams) {
@@ -114,7 +121,20 @@ export default function TeamLobby() {
 
       socket.onerror = (error) => {
         console.error("❌ WebSocket error:", error);
+        if (error.type === 'error' && !socketRef.current) console.warn("Connection attempt failed before opening");
       };
+      socket.onclose = (event) => {
+  console.log(`🔌 TeamLobby WebSocket closed. Code: ${event.code}, Reason: "${event.reason}", WasClean: ${event.wasClean}`);
+  if (event.code !== 1000 && event.code !== 1001 && reconnectAttempts.current < maxReconnectAttempts) {
+    reconnectAttempts.current++;
+    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 10000);
+    console.log(`🔄 Reconnecting in ${delay}ms (attempt ${reconnectAttempts.current}/${maxReconnectAttempts})`);
+    reconnectTimeoutRef.current = setTimeout(() => connectWebSocket(), delay);
+  } else if (reconnectAttempts.current >= maxReconnectAttempts) {
+    console.error("❌ Max reconnection attempts reached for PlayerLobby");
+    alert("Connection lost. Please refresh the page.");
+  }
+};
     }
 
     connectWebSocket();
