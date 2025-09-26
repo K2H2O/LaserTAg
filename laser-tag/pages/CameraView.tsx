@@ -1,34 +1,41 @@
+//2023721380 Ivy
+//2021561648 Bophelo Pharasi
 /* global cv */
 import { useEffect, useRef, useState } from "react";
-//import { useLocation, useNavigate } from "react-router-dom";
 import { useRouter } from "next/router";
 import * as tf from "@tensorflow/tfjs";
 import * as poseDetection from "@tensorflow-models/pose-detection";
 import { Keypoint } from "@tensorflow-models/pose-detection";
 import "@tensorflow/tfjs-backend-webgl";
 
-interface Player 
-  {
-    username : string ,
-    color : string,
-    points : number,
-    hitsGiven : number,
-    hitsTaken : number,
-  }
+// Interface for player data structure
+interface Player {
+  username: string;
+  color: string;
+  points: number;
+  hitsGiven: number;
+  hitsTaken: number;
+}
 
-  interface CanvasWithHitData extends HTMLCanvasElement 
-  { isPersonCentered: boolean; modeColor: string; }
+// Extended canvas interface to store hit detection data
+interface CanvasWithHitData extends HTMLCanvasElement {
+  isPersonCentered: boolean;
+  modeColor: string;
+}
 
 export default function CameraView() {
+  // References for video, canvas, log, and pose detector
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<CanvasWithHitData>(null);
   const logRef = useRef(null);
   const detectorRef = useRef<poseDetection.PoseDetector | null>(null);
+
+  // State for gun type, zoom, and active powerup
   const [gunType, setGunType] = useState<"pistol" | "shotgun" | "sniper">("pistol");
   const [zoomEnabled, setZoomEnabled] = useState(false);
   const [activePowerup, setActivePowerup] = useState(null);
 
-  // Game state
+  // Game state for time and gun configuration
   const [gameTimeString, setGameTimeString] = useState("00:00");
   const gunConfig = {
     pistol: { ammo: 5, reloadTime: 1000 },
@@ -38,24 +45,24 @@ export default function CameraView() {
   const [ammo, setAmmo] = useState(gunConfig["pistol"].ammo);
   const [isReloading, setIsReloading] = useState(false);
 
-  // Extract URL state params
+  // Extract query parameters from URL
   const router = useRouter();
   const { username, gameCode, color } = router.query;
 
-  // Leaderboard state
+  // Leaderboard state and derived data
   const [leaderboardData, setLeaderboardData] = useState<Player[]>([]);
   const sortedPlayers = [...leaderboardData]
     .sort((a, b) => b.points - a.points)
     .slice(0, 3);
-
   const currentPlayer = leaderboardData.find((p) => p.username === username);
   const isDead = currentPlayer?.points === 0;
 
-  // WebSocket ref
+  // WebSocket and audio references
   type AudioKey = "pistol" | "shotgun" | "sniper" | "ouch" | "powerup";
   const socketRef = useRef<WebSocket | null>(null);
-  const audioRef= useRef<Record<AudioKey, HTMLAudioElement>| null>(null);
+  const audioRef = useRef<Record<AudioKey, HTMLAudioElement> | null>(null);
 
+  // Initialize audio files for game sounds
   useEffect(() => {
     if (typeof window !== "undefined") {
       const audioFiles = {
@@ -71,7 +78,6 @@ export default function CameraView() {
         try {
           const audio = new Audio(src);
           audio.preload = "auto"; // Preload for better mobile performance
-          
           audioRef.current![key as AudioKey] = audio;
           audio.onerror = () => console.error(`Failed to load audio: ${src}`);
         } catch (error) {
@@ -81,7 +87,7 @@ export default function CameraView() {
     }
   }, []);
 
-  // Connect to WebSocket & listen for game updates
+  // Establish WebSocket connection and handle game updates
   useEffect(() => {
     console.log(username, gameCode, color);
     if (username == null || gameCode == null || color == null) {
@@ -98,6 +104,7 @@ export default function CameraView() {
       const data = JSON.parse(event.data);
       if (data.type === "gameUpdate") {
         const { players, timeLeft } = data;
+        // Update game timer
         setGameTimeString(
           `${String(Math.floor(timeLeft / 60)).padStart(2, "0")}:${String(
             timeLeft % 60
@@ -105,7 +112,8 @@ export default function CameraView() {
         );
         setLeaderboardData(players);
         if (timeLeft === 0) {
-         router.push({
+          // Navigate to leaderboard when game ends
+          router.push({
             pathname: "/PlayerLeaderboard",
             query: { players: JSON.stringify(players) },
           });
@@ -114,8 +122,7 @@ export default function CameraView() {
       if (data.type === "hit") {
         const { player, target, weapon } = data;
         console.log(`🎯 ${player} hit ${target} with ${weapon}`);
-
-        // If I am the one who got hit
+        // Play sound if current player is hit
         if (target === username) {
           const ouch = audioRef.current?.ouch;
           if (ouch) {
@@ -128,7 +135,7 @@ export default function CameraView() {
         const { powerup, duration } = data;
         console.log(`⚡ Powerup received: ${powerup} for ${duration}s`);
         setActivePowerup(powerup);
-
+        // Play powerup sound
         const powerupSound = audioRef.current?.powerup;
         if (powerupSound) {
           powerupSound.currentTime = 0;
@@ -136,8 +143,7 @@ export default function CameraView() {
             .play()
             .catch((e) => console.warn("Powerup sound failed:", e));
         }
-
-        // Clear after duration
+        // Clear powerup after duration
         setTimeout(() => {
           setActivePowerup(null);
         }, duration * 1000);
@@ -147,28 +153,27 @@ export default function CameraView() {
     socket.onerror = (e) => console.error("WebSocket error", e);
 
     return () => socket.close();
-  }, []);
+  }, [username, gameCode, color, router]);
 
+  // Load TensorFlow.js and pose detection model
   useEffect(() => {
     async function loadDetector() {
-      // Set backend first (optional, but recommended)
       await tf.setBackend("webgl");
       await tf.ready();
-
       const detector = await poseDetection.createDetector(
         poseDetection.SupportedModels.MoveNet,
         {
           modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
         }
       );
-
       detectorRef.current = detector;
     }
     loadDetector();
   }, []);
 
+  // Continuously detect poses in video feed
   useEffect(() => {
-    let animationFrameId:number;
+    let animationFrameId: number;
 
     async function detect() {
       try {
@@ -186,14 +191,11 @@ export default function CameraView() {
     }
 
     detect();
-
-    return () => {
-      cancelAnimationFrame(animationFrameId);
-    };
+    return () => cancelAnimationFrame(animationFrameId);
   }, []);
 
-  // Map RGB to closest CSS color name (used for hit color detection)
-  function getClosestColorName(rgbString:string) {
+  // Convert RGB string to closest CSS color name for hit detection
+  function getClosestColorName(rgbString: string) {
     const cssColors = {
       white: [255, 255, 255],
       black: [0, 0, 0],
@@ -208,8 +210,8 @@ export default function CameraView() {
     };
     const matches = rgbString.match(/\d+/g);
     if (!matches || matches.length !== 3) {
-    console.warn(`Invalid RGB string: ${rgbString}, defaulting to aqua`);
-    return "aqua"; // Fallback for invalid input
+      console.warn(`Invalid RGB string: ${rgbString}, defaulting to aqua`);
+      return "aqua";
     }
     const [r, g, b] = matches.map(Number);
     let closestName = "";
@@ -227,8 +229,8 @@ export default function CameraView() {
     return closestName;
   }
 
-  // Called when a hit is detected; sends hit info to server
-  function hitDetected(targetColor:string, msg:string) {
+  // Send hit data to server via WebSocket
+  function hitDetected(targetColor: string, msg: string) {
     if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
       console.warn("WebSocket not open; hit not sent");
       return;
@@ -240,21 +242,18 @@ export default function CameraView() {
       color: targetColor,
     };
     socketRef.current.send(JSON.stringify(hitPayload));
-    if (logRef.current) {
-      //logRef.current.textContent = `Hit sent: ${targetColor} ${msg} with ${gunType}`;
-    }
   }
 
-  // Check if torso is centered and trigger hit detection
-  function checkHit(canvas:CanvasWithHitData) {
+  // Check if torso is centered for hit detection
+  function checkHit(canvas: CanvasWithHitData) {
     if (canvas.isPersonCentered) {
       const colorName = getClosestColorName(canvas.modeColor);
       hitDetected(colorName, "torso in center");
     }
   }
 
-  // Process video frame once to detect pose & torso color
-  async function processVideoOnce(video:HTMLVideoElement, canvas:CanvasWithHitData, detector:poseDetection.PoseDetector) {
+  // Process a single video frame for pose detection and visualization
+  async function processVideoOnce(video: HTMLVideoElement, canvas: CanvasWithHitData, detector: poseDetection.PoseDetector) {
     const width = video.videoWidth;
     const height = video.videoHeight;
     if (!width || !height) return;
@@ -263,29 +262,28 @@ export default function CameraView() {
     canvas.height = height;
     const ctx = canvas.getContext("2d");
 
-    if(!ctx)
-    {
-        console.error("context is not available");
-        return;
+    if (!ctx) {
+      console.error("context is not available");
+      return;
     }
-    // Draw current video frame
+    // Draw video frame on canvas
     ctx.clearRect(0, 0, width, height);
     ctx.drawImage(video, 0, 0, width, height);
 
     if (!detector) return;
 
-    // Estimate pose(s)
+    // Detect poses in the video frame
     const poses = await detector.estimatePoses(video);
     if (poses.length === 0) return;
 
     const keypoints = poses[0].keypoints;
 
-    // Helper to get a keypoint by name
-    function getKeypoint(name:string) {
+    // Helper function to get a keypoint by name
+    function getKeypoint(name: string) {
       return keypoints.find((k) => k.name === name);
     }
 
-    // Get shoulder and hip points
+    // Get torso keypoints
     const ls = getKeypoint("left_shoulder");
     const rs = getKeypoint("right_shoulder");
     const lh = getKeypoint("left_hip");
@@ -293,10 +291,8 @@ export default function CameraView() {
 
     if (!ls || !rs || !lh || !rh) return;
 
-    // Draw torso polygon connecting these four points
+    // Draw torso polygon
     const points = [ls, rs, rh, lh];
-
-    // Draw filled torso polygon with translucent fill color
     ctx.beginPath();
     ctx.moveTo(points[0].x, points[0].y);
     for (let i = 1; i < points.length; i++) {
@@ -304,19 +300,18 @@ export default function CameraView() {
     }
     ctx.closePath();
 
-    // Sample the mode color inside the rectangle formed by shoulders
-    function getModeColorFromPoints(p1:Keypoint,p2:Keypoint) {
+    // Sample the dominant color in the torso area
+    function getModeColorFromPoints(p1: Keypoint, p2: Keypoint) {
       const minX = Math.floor(Math.min(p1.x, p2.x));
       const minY = Math.floor(Math.min(p1.y, p2.y));
       const width = Math.floor(Math.abs(p1.x - p2.x));
       const height = Math.floor(Math.abs(p1.y - p2.y));
       if (width < 1 || height < 1) return "aqua";
-        
-      if(!ctx)
-    {
+
+      if (!ctx) {
         console.error("context is not available");
         return;
-    }
+      }
       const imgData = ctx.getImageData(minX, minY, width, height);
       const colorCount = new Map();
 
@@ -342,14 +337,14 @@ export default function CameraView() {
     const modeColor = getModeColorFromPoints(ls, rs)!;
     const rgbaColor = modeColor.replace("rgb(", "rgba(").replace(")", ", 0.3)");
 
+    // Fill and stroke torso polygon
     ctx.fillStyle = rgbaColor;
     ctx.fill();
-
     ctx.strokeStyle = modeColor;
     ctx.lineWidth = 3;
     ctx.stroke();
 
-    // Draw keypoints as small circles (only if score > 0.5)
+    // Draw keypoints with confidence score > 0.5
     keypoints.forEach((kp) => {
       if (kp.score !== undefined && kp.score > 0.5) {
         ctx.beginPath();
@@ -359,7 +354,7 @@ export default function CameraView() {
       }
     });
 
-    // Draw a permanent red dot in center of canvas (reticle)
+    // Draw reticle at canvas center
     const centerX = width / 2;
     const centerY = height / 2;
     ctx.beginPath();
@@ -367,9 +362,8 @@ export default function CameraView() {
     ctx.fillStyle = "red";
     ctx.fill();
 
-    // Check if person is standing roughly centered:
-    // We consider centered if centerX,centerY lies inside torso polygon (simple point-in-polygon)
-    function pointInPolygon(point:[number,number],vs : Array<{ x: number; y: number }>) {
+    // Check if reticle is inside torso polygon
+    function pointInPolygon(point: [number, number], vs: Array<{ x: number; y: number }>) {
       let x = point[0],
         y = point[1];
       let inside = false;
@@ -387,37 +381,39 @@ export default function CameraView() {
     }
 
     const isCentered = pointInPolygon([centerX, centerY], points);
-
-    // Attach to canvas for external use (e.g., button click)
     canvas.isPersonCentered = isCentered;
     canvas.modeColor = modeColor;
   }
 
+  // Handle shooting action
   const handleShoot = () => {
-    if (isReloading || isDead) return; // 🔒 Don't shoot if dead or reloading
+    if (isReloading || isDead) return;
     if (ammo <= 0) {
       console.log("🔫 No ammo left — can't shoot");
       return;
     }
 
+    // Play shooting sound
     if (audioRef.current?.[gunType]) {
       const shootSound = audioRef.current[gunType];
       shootSound.currentTime = 0;
       shootSound.play().catch((e) => console.warn("Audio play failed:", e));
     }
 
+    // Decrease ammo and trigger reload if necessary
     setAmmo((prevAmmo) => {
       const newAmmo = prevAmmo - 1;
       if (newAmmo === 0) reload();
       return newAmmo;
     });
 
+    // Trigger vibration feedback
     if (navigator.vibrate) navigator.vibrate([75, 25, 75]);
     if (canvasRef.current) checkHit(canvasRef.current);
   };
 
-  // Gun selection handler
-  const selectGun = (type:"pistol" | "shotgun" | "sniper") => {
+  // Handle gun selection
+  const selectGun = (type: "pistol" | "shotgun" | "sniper") => {
     setGunType(type);
     setAmmo(gunConfig[type].ammo);
     setIsReloading(false);
@@ -429,7 +425,7 @@ export default function CameraView() {
     }
   };
 
-  // Reload gun
+  // Reload gun after delay
   const reload = () => {
     if (isReloading) return;
     setIsReloading(true);
@@ -439,13 +435,13 @@ export default function CameraView() {
     }, gunConfig[gunType].reloadTime);
   };
 
-  // Disable zoom gestures unless zoomEnabled
+  // Prevent unintended zoom gestures
   useEffect(() => {
     if (zoomEnabled) return;
 
-    const preventZoom = (e:Event) => e.preventDefault();
+    const preventZoom = (e: Event) => e.preventDefault();
     let lastTouch = 0;
-    const doubleTapBlocker = (e:Event) => {
+    const doubleTapBlocker = (e: Event) => {
       const now = Date.now();
       if (now - lastTouch <= 300) e.preventDefault();
       lastTouch = now;
@@ -462,7 +458,7 @@ export default function CameraView() {
     };
   }, [zoomEnabled]);
 
-  // Start camera
+  // Start camera feed
   useEffect(() => {
     async function startCamera() {
       try {
@@ -476,18 +472,18 @@ export default function CameraView() {
       } catch (err) {
         console.error("Camera error:", err);
         if (err instanceof Error) {
-            alert(`Camera access denied. Please allow permissions.\n\nError: ${err.message}`);
+          alert(`Camera access denied. Please allow permissions.\n\nError: ${err.message}`);
         } else {
-            alert("Camera access denied. Please allow permissions.\n\nUnknown error occurred.");
+          alert("Camera access denied. Please allow permissions.\n\nUnknown error occurred.");
         }
       }
     }
     startCamera();
   }, []);
 
-  // Send camera frames periodically to server via WebSocket
+  // Periodically send video frames to server
   useEffect(() => {
-    let intervalId:NodeJS.Timeout;
+    let intervalId: NodeJS.Timeout;
 
     const sendFrames = () => {
       const video = videoRef.current;
@@ -500,11 +496,10 @@ export default function CameraView() {
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
           const ctx = canvas.getContext("2d");
-          if(!ctx)
-        {
+          if (!ctx) {
             console.error("context is not available");
             return;
-        }
+          }
           ctx.drawImage(video, 0, 0);
           const frame = canvas.toDataURL("image/jpeg", 0.5);
 
@@ -517,7 +512,6 @@ export default function CameraView() {
           );
         }, 100);
       } else {
-        // Wait for socket to open then start
         const waitForSocket = setInterval(() => {
           if (socket.readyState === WebSocket.OPEN) {
             clearInterval(waitForSocket);
@@ -531,6 +525,7 @@ export default function CameraView() {
     return () => clearInterval(intervalId);
   }, [username]);
 
+  // Render game UI
   return (
     <div
       style={{
@@ -555,7 +550,6 @@ export default function CameraView() {
           transition: "transform 0.2s ease-in-out",
         }}
       />
-
       <canvas
         ref={canvasRef}
         width={640}
@@ -570,7 +564,6 @@ export default function CameraView() {
           pointerEvents: "none",
         }}
       />
-
       {activePowerup && (
         <div
           style={{
@@ -589,7 +582,6 @@ export default function CameraView() {
           Powerup: {activePowerup}
         </div>
       )}
-
       <div
         ref={logRef}
         style={{
@@ -601,7 +593,6 @@ export default function CameraView() {
           zIndex: 4,
         }}
       />
-
       <div
         style={{
           position: "absolute",
@@ -645,7 +636,6 @@ export default function CameraView() {
             You Died
           </div>
         )}
-
         <div
           style={{
             position: "absolute",
@@ -683,10 +673,10 @@ export default function CameraView() {
                 cursor: isReloading ? "not-allowed" : "pointer",
                 transition: "transform 0.1s ease-in-out",
               }}
-              onTouchStart={(e:React.TouchEvent<HTMLImageElement>|React.MouseEvent<HTMLImageElement>) => {
+              onTouchStart={(e: React.TouchEvent<HTMLImageElement> | React.MouseEvent<HTMLImageElement>) => {
                 e.currentTarget.style.transform = "scale(0.95)";
               }}
-              onTouchEnd={(e:React.TouchEvent<HTMLImageElement>|React.MouseEvent<HTMLImageElement>) => {
+              onTouchEnd={(e: React.TouchEvent<HTMLImageElement> | React.MouseEvent<HTMLImageElement>) => {
                 e.currentTarget.style.transform = "scale(1)";
               }}
             />
@@ -716,7 +706,6 @@ export default function CameraView() {
             </div>
           )}
         </div>
-
         <div
           style={{
             position: "absolute",
@@ -742,7 +731,6 @@ export default function CameraView() {
           >
             Pistol
           </button>
-
           <button
             onClick={() => selectGun("shotgun")}
             style={{
@@ -757,7 +745,6 @@ export default function CameraView() {
           >
             Shotgun
           </button>
-
           <button
             onClick={() => selectGun("sniper")}
             style={{
@@ -773,7 +760,6 @@ export default function CameraView() {
             Sniper
           </button>
         </div>
-
         <div
           style={{
             position: "absolute",
@@ -791,8 +777,6 @@ export default function CameraView() {
         >
           {gameTimeString}
         </div>
-
-        {/* Leaderboard */}
         <div
           style={{
             position: "absolute",

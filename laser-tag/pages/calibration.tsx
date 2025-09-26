@@ -1,56 +1,65 @@
+//2023721380 Ivy
+//2021561648 Bophelo Pharasi
 import { useEffect, useRef, useState } from "react";
 import * as tf from "@tensorflow/tfjs";
 import * as poseDetection from "@tensorflow-models/pose-detection";
 import { Keypoint } from "@tensorflow-models/pose-detection";
 import { useRouter } from "next/router";
 
+// Calibration component for capturing user pose and color for a laser tag game
 export default function Calibration() {
+  // References to video and canvas elements for webcam feed and rendering
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  
+  // State to store the pose detector instance
   const [detector, setDetector] = useState<poseDetection.PoseDetector | null>(null);
+  
+  // State to store the captured pose keypoints
   const [capturedPose, setCapturedPose] = useState<Keypoint[] | null>(null);
+  
+  // State to store the username input
   const [username, setUsername] = useState("");
-  const lastSentColorRef = useRef<string|null>(null); // ✅ Ref to track last sent color
+  
+  // Ref to track the last sent color to avoid redundant updates
+  const lastSentColorRef = useRef<string|null>(null);
 
-  //const navigate = useNavigate();
-  //const location = useLocation();
-  //const { gameCode } = location.state || {};
+  // Router to access query parameters and navigate
   const router = useRouter();
   const { gameCode } = router.query;
 
+  // Initialize webcam, canvas, and pose detector on component mount
   useEffect(() => {
     let detectorInstance;
 
     async function init() {
+      // Ensure TensorFlow.js is ready
       await tf.ready();
 
+      // Access the user's webcam
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user" },
         audio: false,
       });
 
+      // Set webcam stream to video element and play
       const video = videoRef.current;
-      if(video)
-      {
+      if(video) {
         video.srcObject = stream;
         await video.play();
-
-      }
-      else
-      {
+      } else {
         console.error("Video ref is not assigned yet");
         return;
       }
-      
 
+      // Configure canvas dimensions to match video
       const canvas = canvasRef.current;
-      if(canvas)
-      {
+      if(canvas) {
         canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+        canvas.height = video.videoHeight;
       }
-      
 
+      // Create MoveNet pose detector
       detectorInstance = await poseDetection.createDetector(
         poseDetection.SupportedModels.MoveNet,
         {
@@ -58,6 +67,7 @@ export default function Calibration() {
         }
       );
 
+      // Store detector and start rendering loop
       setDetector(detectorInstance);
       renderLoop(detectorInstance);
     }
@@ -65,21 +75,26 @@ export default function Calibration() {
     init();
   }, []);
 
+  // Find a keypoint by name from the keypoints array
   function getKeypoint(keypoints: Keypoint[], name: string): Keypoint | undefined {
     return keypoints.find((k) => k.name === name);
   }
 
+  // Calculate the most frequent (mode) color in the region between two keypoints
   function getModeColorFromPoints(ctx: CanvasRenderingContext2D, p1:Keypoint, p2:Keypoint) {
     const minX = Math.floor(Math.min(p1.x, p2.x));
     const minY = Math.floor(Math.min(p1.y, p2.y));
     const width = Math.floor(Math.abs(p1.x - p2.x));
     const height = Math.floor(Math.abs(p1.y - p2.y));
 
+    // Return default color if region is invalid
     if (width < 1 || height < 1) return "aqua";
 
+    // Extract image data from the specified region
     const imgData = ctx.getImageData(minX, minY, width, height);
     const colorCount = new Map();
 
+    // Count occurrences of each color
     for (let i = 0; i < imgData.data.length; i += 4) {
       const r = imgData.data[i];
       const g = imgData.data[i + 1];
@@ -88,6 +103,7 @@ export default function Calibration() {
       colorCount.set(key, (colorCount.get(key) || 0) + 1);
     }
 
+    // Find the color with the highest count
     let modeColor = "aqua";
     let maxCount = 0;
 
@@ -101,8 +117,8 @@ export default function Calibration() {
     return modeColor;
   }
 
-  // Map RGB to closest CSS color name (used for hit color detection)
-  function getClosestColorName(rgbString: string):string {
+  // Map an RGB color to the closest CSS color name
+  function getClosestColorName(rgbString: string): string {
     const cssColors = {
       white: [255, 255, 255],
       black: [0, 0, 0],
@@ -115,13 +131,16 @@ export default function Calibration() {
       pink: [255, 0, 255],
       aqua: [0, 255, 255],
     };
+    
+    // Parse RGB string
     const matches = rgbString.match(/\d+/g);
     if (!matches || matches.length !== 3) {
-    console.warn(`Invalid RGB string: ${rgbString}, defaulting to aqua`);
-    return "aqua"; // Fallback for invalid input
+      console.warn(`Invalid RGB string: ${rgbString}, defaulting to aqua`);
+      return "aqua";
     }
     const [r, g, b] = matches.map(Number);
 
+    // Find closest color by Euclidean distance
     let closestName = "";
     let minDist = Infinity;
     for (const [name, [cr, cg, cb]] of Object.entries(cssColors)) {
@@ -135,28 +154,30 @@ export default function Calibration() {
     return closestName;
   }
 
+  // Continuously render video feed and detected poses
   async function renderLoop(detector: poseDetection.PoseDetector) {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
-    
     const video = videoRef.current;
 
     async function draw() {
-        if(!ctx || !canvas)
-        {
-            console.error("Canvas or context is not available");
-            return;
-        }
+      if(!ctx || !canvas) {
+        console.error("Canvas or context is not available");
+        return;
+      }
+      if (!video) {
+        console.error("Video ref is not available");
+        return;
+      }
 
-        if (!video) {
-            console.error("Video ref is not available");
-            return;
-        }
+      // Clear and redraw video frame on canvas
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
+      // Manage TensorFlow memory
       await tf.engine().startScope();
 
+      // Estimate poses and draw keypoints and torso box
       const poses = await detector.estimatePoses(video);
       if (poses.length > 0) {
         const keypoints = poses[0].keypoints;
@@ -172,9 +193,10 @@ export default function Calibration() {
     draw();
   }
 
+  // Draw keypoints with confidence score above threshold
   function drawKeypoints(ctx: CanvasRenderingContext2D, keypoints: Keypoint[]) {
     keypoints.forEach((keypoint) => {
-      if ( keypoint.score !== undefined && keypoint.score > 0.5) {
+      if (keypoint.score !== undefined && keypoint.score > 0.5) {
         const { x, y } = keypoint;
         ctx.beginPath();
         ctx.arc(x, y, 5, 0, 2 * Math.PI);
@@ -184,7 +206,8 @@ export default function Calibration() {
     });
   }
 
-  function drawTorsoBox(ctx: CanvasRenderingContext2D, keypoints:Keypoint[]) {
+  // Draw a box around the torso using shoulder and hip keypoints
+  function drawTorsoBox(ctx: CanvasRenderingContext2D, keypoints: Keypoint[]) {
     const ls = getKeypoint(keypoints, "left_shoulder");
     const rs = getKeypoint(keypoints, "right_shoulder");
     const lh = getKeypoint(keypoints, "left_hip");
@@ -192,6 +215,7 @@ export default function Calibration() {
 
     if (!ls || !rs || !lh || !rh) return;
 
+    // Draw a filled polygon with the mode color
     const points = [ls, rs, rh, lh];
     const modeColor = getModeColorFromPoints(ctx, ls, rs);
     const rgbaColor = modeColor.replace("rgb(", "rgba(").replace(")", ", 0.3)");
@@ -211,6 +235,7 @@ export default function Calibration() {
     ctx.stroke();
   }
 
+  // Capture pose and navigate to PlayerLobby with detected color
   function capturePose() {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
@@ -223,21 +248,26 @@ export default function Calibration() {
     const ls = getKeypoint(capturedPose, "left_shoulder");
     const rs = getKeypoint(capturedPose, "right_shoulder");
 
+    // Validate shoulder detection
     if (!ls || !rs || (ls.score !== undefined && ls.score < 0.5) || (rs.score !== undefined && rs.score < 0.5)) {
       alert("Could not detect shoulders properly. Try again.");
       return;
     }
-    if (!ctx) { alert("Context not available"); return; }
+    if (!ctx) {
+      alert("Context not available");
+      return;
+    }
+    
+    // Get mode color and store it
     const modeColor = getModeColorFromPoints(ctx, ls, rs);
-
     if (!modeColor || modeColor === "aqua") {
       alert("Color could not be captured. Try again.");
       return;
     }
 
-    lastSentColorRef.current = modeColor; // ✅ save color in ref
+    lastSentColorRef.current = modeColor;
 
-    
+    // Navigate to PlayerLobby with captured data
     router.push({
       pathname: "/PlayerLobby",
       query: {
@@ -248,6 +278,7 @@ export default function Calibration() {
     });
   }
 
+  // JSX for rendering the UI
   return (
     <div
       style={{
@@ -256,35 +287,35 @@ export default function Calibration() {
         flexDirection: "column",
         alignItems: "center",
         backgroundColor: "#1a1a1a",
-        height: "100%", // Ensure full height
+        height: "100%",
       }}
     >
-      {/* Banner Section */}
+      {/* Banner with game logo */}
       <div
         style={{
           width: "100%",
-          minHeight: "60px", // Reduced minimum height for mobile
-          height: "10%", // Adjusted for better mobile fit
-          backgroundColor: "#800080", // Purple background
+          minHeight: "60px",
+          height: "10%",
+          backgroundColor: "#800080",
           display: "flex",
           justifyContent: "center",
           alignItems: "center",
-          marginBottom: "0", // Remove margin to avoid gaps
+          marginBottom: "0",
         }}
       >
         <img
           src="/images/Laser-Tag.png"
           alt="Laser Tag Logo"
           style={{
-            maxHeight: "80px", // Reduced for mobile
+            maxHeight: "80px",
             width: "auto",
-            maxWidth: "30vw", // Smaller max width for mobile
+            maxWidth: "30vw",
             objectFit: "contain",
           }}
         />
       </div>
 
-      {/* Centered Camera View with Background */}
+      {/* Webcam feed and canvas for pose detection */}
       <div
         style={{
           display: "flex",
@@ -293,10 +324,10 @@ export default function Calibration() {
           flexGrow: 1,
           justifyContent: "center",
           width: "100%",
-          padding: "0 10px", // Small padding for mobile
-          backgroundColor: "rgba(0, 0, 0, 0.5)", // Semi-transparent black background
-          maxWidth: "90%", // Limit width on mobile
-          margin: "0 auto", // Center the container
+          padding: "0 10px",
+          backgroundColor: "rgba(0, 0, 0, 0.5)",
+          maxWidth: "90%",
+          margin: "0 auto",
         }}
       >
         <video
@@ -308,21 +339,21 @@ export default function Calibration() {
         ></video>
         <canvas
           ref={canvasRef}
-          style={{ maxWidth: "100%", height: "auto" }} // Ensure canvas scales
+          style={{ maxWidth: "100%", height: "auto" }}
         ></canvas>
       </div>
 
-      {/* Input and Button Section */}
+      {/* Username input and capture button */}
       <div
         style={{
           marginTop: "1rem",
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
-          padding: "0 10px", // Add padding for mobile
+          padding: "0 10px",
           width: "100%",
-          maxWidth: "300px", // Limit width for better mobile layout
-          margin: "0 auto", // Center the section
+          maxWidth: "300px",
+          margin: "0 auto",
         }}
       >
         <input
