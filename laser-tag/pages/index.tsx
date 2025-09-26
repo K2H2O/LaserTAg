@@ -1,7 +1,11 @@
+// React hooks for state and lifecycle management
 import { useEffect, useRef, useState } from "react";
+// Router for navigation and URL parameter access
 import { useRouter } from "next/router";
 
+// Landing Page Component
 export default function LandingPage() {
+  // State variables for game code, username, and sound settings
   const [gameCode, setGameCode] = useState("");
   const [username, setUsername] = useState("");
   // for sound
@@ -101,7 +105,9 @@ export default function LandingPage() {
 
   const isValidCode = (Code:string) => Code.length === 4;
 
+  // validate game code and navigate to pose calibration screen
   const goToCalibration = () => {
+    // validate 4 letter code
     if (!isValidCode(gameCode)) {
       alert("Please enter a valid 4-letter game code.");
       return;
@@ -206,8 +212,9 @@ export default function LandingPage() {
           marginTop: "0",
         }}
       >
+        {/* Game Code Input */}
         <h1 style={{ marginBottom: "0.5rem", color: "#fff" }}>Enter Code:</h1>
-        <input
+        <input 
           type="text"
           value={gameCode}
           onChange={(e) =>
@@ -231,7 +238,7 @@ export default function LandingPage() {
             outline: "none",
           }}
         />
-
+      {/* button to start calibration if you joined as a player*/}
         <div style={{ display: "flex", gap: "1rem", justifyContent: "center" }}>
           <button
             onClick={goToCalibration}
@@ -253,6 +260,7 @@ export default function LandingPage() {
             Join as Player
           </button>
 
+        {/* button to start calibration if want to spectate the game*/}
           <button
             onClick={joinSpectatorStreaming}
             style={{

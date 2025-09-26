@@ -1,3 +1,4 @@
+// importing tensorflow and pose-detection libraries
 import { useEffect, useRef, useState } from "react";
 import * as tf from "@tensorflow/tfjs";
 import * as poseDetection from "@tensorflow-models/pose-detection";
@@ -5,30 +6,39 @@ import { Keypoint } from "@tensorflow-models/pose-detection";
 import { useRouter } from "next/router";
 
 export default function Calibration() {
+  // references for video stream and canvas drawing
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // pose detection model and captured pose state
   const [detector, setDetector] = useState<poseDetection.PoseDetector | null>(null);
   const [capturedPose, setCapturedPose] = useState<Keypoint[] | null>(null);
   const [username, setUsername] = useState("");
+
   const lastSentColorRef = useRef<string|null>(null); // ✅ Ref to track last sent color
 
   //const navigate = useNavigate();
   //const location = useLocation();
   //const { gameCode } = location.state || {};
+
+  // routing - set game session code from URL parameters
   const router = useRouter();
   const { gameCode } = router.query;
 
+  // Set up camera , TensorFlow, and pose detection on component mount
   useEffect(() => {
     let detectorInstance;
 
     async function init() {
-      await tf.ready();
+      await tf.ready();    // initalize TensorFlow.js
 
+      // access user's webcam
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user" },
         audio: false,
       });
 
+      // configure video element with camera stream
       const video = videoRef.current;
       if(video)
       {
@@ -42,7 +52,7 @@ export default function Calibration() {
         return;
       }
       
-
+     //set canvas dimensions to match video
       const canvas = canvasRef.current;
       if(canvas)
       {
@@ -50,7 +60,7 @@ export default function Calibration() {
       canvas.height = video.videoHeight;
       }
       
-
+      // create pose detector using MoveNet model
       detectorInstance = await poseDetection.createDetector(
         poseDetection.SupportedModels.MoveNet,
         {
@@ -65,10 +75,12 @@ export default function Calibration() {
     init();
   }, []);
 
+  // find specific keypoint by name pose detection results
   function getKeypoint(keypoints: Keypoint[], name: string): Keypoint | undefined {
     return keypoints.find((k) => k.name === name);
   }
 
+  //extract dominant color from area between two keypoints
   function getModeColorFromPoints(ctx: CanvasRenderingContext2D, p1:Keypoint, p2:Keypoint) {
     const minX = Math.floor(Math.min(p1.x, p2.x));
     const minY = Math.floor(Math.min(p1.y, p2.y));
@@ -172,6 +184,7 @@ export default function Calibration() {
     draw();
   }
 
+  // render detected pose keypoints as colored dots
   function drawKeypoints(ctx: CanvasRenderingContext2D, keypoints: Keypoint[]) {
     keypoints.forEach((keypoint) => {
       if ( keypoint.score !== undefined && keypoint.score > 0.5) {
@@ -184,6 +197,7 @@ export default function Calibration() {
     });
   }
 
+  // draw semi-transparent box around torso area
   function drawTorsoBox(ctx: CanvasRenderingContext2D, keypoints:Keypoint[]) {
     const ls = getKeypoint(keypoints, "left_shoulder");
     const rs = getKeypoint(keypoints, "right_shoulder");
@@ -211,6 +225,7 @@ export default function Calibration() {
     ctx.stroke();
   }
 
+  //validate pose detection, extract color , and proceed to game lobby
   function capturePose() {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
@@ -235,6 +250,7 @@ export default function Calibration() {
       return;
     }
 
+    //store color and navigate to lobby
     lastSentColorRef.current = modeColor; // ✅ save color in ref
 
     
@@ -249,6 +265,7 @@ export default function Calibration() {
   }
 
   return (
+    // main container
     <div
       style={{
         minHeight: "100vh",
@@ -265,7 +282,7 @@ export default function Calibration() {
           width: "100%",
           minHeight: "60px", // Reduced minimum height for mobile
           height: "10%", // Adjusted for better mobile fit
-          backgroundColor: "#800080", // Purple background
+          backgroundColor: "#800080", // Purple background banner
           display: "flex",
           justifyContent: "center",
           alignItems: "center",
@@ -325,6 +342,7 @@ export default function Calibration() {
           margin: "0 auto", // Center the section
         }}
       >
+        {/* Username Input */}
         <input
           type="text"
           value={username}
@@ -343,7 +361,7 @@ export default function Calibration() {
             boxSizing: "border-box",
           }}
         />
-
+       {/* Capture Pose Button */}
         <button
           onClick={capturePose}
           disabled={!username.trim()}

@@ -26,7 +26,7 @@ interface Player
     latitude: number,
     longitude: number,
     color :string ,
-    lastUpdated: number // to confirm if we should add colon or comma
+    lastUpdated: number 
   }
   interface MinimapBounds{
     minLat: number,
@@ -35,6 +35,7 @@ interface Player
     maxLon:number,
   }
 
+  // main game interface for laser tag gameplay with pose detection
 export default function CameraView() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<CanvasWithHitData>(null);
