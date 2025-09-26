@@ -1,22 +1,24 @@
+// React hooks for state/ref management, Next.js router for navigation
 import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/router";
 
 interface Player {
   username: string;
   color: string;
-}
+}// Defines player data structure with username and color
+
 
 interface Team {
   teamId: number;
   players: Player[];
 }
-
+//defines team structure with ID and list of players
 interface Message {
   type: string;
   teams?: Team[];
   admin?: string;
 }
-
+//Defines WebSocket message structure for team updates and admin info
 export default function TeamLobby() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [adminUsername, setAdminUsername] = useState("");
@@ -25,9 +27,11 @@ export default function TeamLobby() {
   const maxReconnectAttempts = 5;
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // State for teams and admin, refs for WebSocket and reconnection logic
   const router = useRouter();
   const { gameCode, username, color, teamId } = router.query;
 
+  // extract game parameters from URL query
   useEffect(() => {
     // Early return if required data is missing
     if (!gameCode || !username || !color || !teamId) {
@@ -53,11 +57,12 @@ export default function TeamLobby() {
       );
       socketRef.current = socket;
 
+      // Establishes WebSocket connection with query parameters
       socket.onopen = () => {
         console.log("🔗 TeamLobby WebSocket connected");
         reconnectAttempts.current = 0;
       };
-
+// Resets reconnect attempts on successful connection
       socket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data) as Message;
@@ -84,6 +89,7 @@ export default function TeamLobby() {
         }
       };
 
+// Handles team updates and game start; error handling could be improved
       socket.onclose = (event) => {
         console.log(
           `🔌 TeamLobby WebSocket closed. Code: ${event.code}, Reason: "${event.reason}", WasClean: ${event.wasClean}`
@@ -170,6 +176,7 @@ export default function TeamLobby() {
         position: "relative",
       }}
     >
+      {/* Main container with full-screen background image */}
       <div
         style={{
           width: "100%",
@@ -328,4 +335,5 @@ export default function TeamLobby() {
       </style>
     </div>
   );
+  // Responsive lobby UI with WebSocket updates; move styles to CSS module
 }

@@ -38,7 +38,7 @@ export default function LandingPage() {
       return;
     }
     router.push({
-      pathname: "/spectator_stream",
+      pathname: "/SpectatorStreaming",
       query: { gameCode },
     });
   };

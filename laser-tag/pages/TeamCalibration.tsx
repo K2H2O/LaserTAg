@@ -1,3 +1,4 @@
+// React hooks, TensorFlow.js, and Next.js router for pose detection and navigation
 import { useEffect, useRef, useState } from "react";
 import * as tf from "@tensorflow/tfjs";
 import * as poseDetection from "@tensorflow-models/pose-detection";
@@ -15,6 +16,7 @@ export default function TeamCalibration() {
   const router = useRouter();
   const { gameCode } = router.query;
 
+  // Reference for video/canvas, state for detector/pose/username, router for gameCode
   useEffect(() => {
     let detectorInstance;
 
@@ -68,9 +70,13 @@ export default function TeamCalibration() {
   init();
 }, []);
 
+// Initializes camera, canvas, and MoveNet detector; starts render loop; needs cleanup
+
   function getKeypoint(keypoints: Keypoint[], name: string): Keypoint | undefined {
     return keypoints.find((k) => k.name === name);
   }
+
+  // Finds keypoint by name (e.g., left_shoulder)
 
   function getModeColorFromPoints(ctx: CanvasRenderingContext2D, p1: Keypoint, p2: Keypoint) {
     const minX = Math.floor(Math.min(p1.x, p2.x));
@@ -103,6 +109,8 @@ export default function TeamCalibration() {
 
     return modeColor;
   }
+
+  // Gets dominant color between two keypoints; consider pixel sampling for performance
 
   // Map RGB to closest CSS color name (used for hit color detection)
   function getClosestColorName(rgbString: string): string {
@@ -138,6 +146,7 @@ export default function TeamCalibration() {
     return closestName;
   }
 
+  // Maps RGB to closest CSS color; add distance threshold for better accuracy
   // Get team ID based on color
   function getTeamId(color: string): number {
     const teamMap: { [key: string]: number } = {
@@ -155,6 +164,7 @@ export default function TeamCalibration() {
     return teamMap[color] || 11; // Default to team 4 if no match
   }
 
+  // Maps color to team ID
   // Check team size and return true if team has less than 4 players
   function canJoinTeam(teamId: number, gameCode: string): boolean {
     const teamSizesStr = localStorage.getItem(`teamSizes_${gameCode}`);
@@ -171,6 +181,7 @@ export default function TeamCalibration() {
     return true;
   }
 
+  // checks team size; move to server-side to avoid race cpnditions
   async function renderLoop(detector: poseDetection.PoseDetector) {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
@@ -206,7 +217,7 @@ export default function TeamCalibration() {
 
     draw();
   }
-
+  //Renders video feed and pose keypoints on canvas
   function drawKeypoints(ctx: CanvasRenderingContext2D, keypoints: Keypoint[]) {
     keypoints.forEach((keypoint) => {
       if (keypoint.score !== undefined && keypoint.score > 0.5) {
@@ -219,6 +230,7 @@ export default function TeamCalibration() {
     });
   }
 
+// draw keyponits with confidence  > 0.5
   function drawTorsoBox(ctx: CanvasRenderingContext2D, keypoints: Keypoint[]) {
     const ls = getKeypoint(keypoints, "left_shoulder");
     const rs = getKeypoint(keypoints, "right_shoulder");
@@ -246,6 +258,7 @@ export default function TeamCalibration() {
     ctx.stroke();
   }
 
+  // Draws torso box with semi-transparent fill and solid border
   function capturePose() {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
@@ -301,6 +314,8 @@ export default function TeamCalibration() {
     });
   }
 
+  
+  // Captures pose, assigns team by color, navigates to lobby; use toast instead of alert
   return (
     <div
       style={{
@@ -419,4 +434,4 @@ export default function TeamCalibration() {
       </div>
     </div>
   );
-}
+}// Responsive UI with banner, canvas, and input; styled css

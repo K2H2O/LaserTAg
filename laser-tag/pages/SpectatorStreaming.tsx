@@ -1,6 +1,8 @@
+//core react functionality and Next.js navigation
 import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/router";
 
+//player statistics structure
 interface Player 
   {
     username : string ,
@@ -9,8 +11,10 @@ interface Player
     hitsGiven : number,
     hitsTaken : number,
   }
+  // camera frame structure
 interface Frame { username: string; frame: string; }
 
+//real time viewing interface for watching game participants
 export default function SpectatorStreaming() {
   const [frameMap, setFrameMap] = useState(new Map());
   const [usernames, setUsernames] = useState<string[]>([]);
@@ -18,12 +22,14 @@ export default function SpectatorStreaming() {
   const [playerStats, setPlayerStats] = useState<Player[]>([]);
   const [gameTimeString, setGameTimeString] = useState("00:00");
 
+  // websocket connection
   const socketRef = useRef<WebSocket | null>(null);
 
+  // routing 
   const router = useRouter();
   const { gameCode } = router.query;
 
-
+// websocket setup and message handling
   useEffect(() => {
     const socketUrl = `wss://bbd-lasertag.onrender.com/session/${gameCode}/spectator`;
     console.log("🔌 Connecting to WebSocket at:", socketUrl);
@@ -38,12 +44,13 @@ export default function SpectatorStreaming() {
       try {
         const data = JSON.parse(event.data);
         console.log("📦 Raw WebSocket message received:", data);
-
+       // Handle incoming camera frames from players
         if (data.type === "cameraFramesBatch" && Array.isArray(data.frames)) {
             const frames = data.frames as Frame[]
           const incomingUsernames: string[] = frames.map((f:Frame) => f.username);
           const currentUsername = usernames[currentIndex];
 
+          // update frame map with camera data
           setFrameMap((prev) => {
             const newMap = new Map();
             for (const frame of data.frames) {
@@ -57,6 +64,7 @@ export default function SpectatorStreaming() {
             return newMap;
           });
 
+          // update usernames list if there are changes
           if (
             incomingUsernames.length !== usernames.length ||
             !incomingUsernames.every((name, i) => name === usernames[i])
@@ -68,7 +76,7 @@ export default function SpectatorStreaming() {
             }
           }
         }
-
+        // handle game state updates
         if (data.type === "gameUpdate" && Array.isArray(data.players)) {
           console.log("🧠 Updating player stats:", data.players);
           setPlayerStats(data.players);
@@ -103,6 +111,7 @@ export default function SpectatorStreaming() {
     };
   }, [gameCode, usernames, currentIndex]);
 
+  // go to next or previous player stream
   const goToNext = () => {
     setCurrentIndex((prev) => (prev + 1) % usernames.length);
   };
@@ -111,11 +120,13 @@ export default function SpectatorStreaming() {
     setCurrentIndex((prev) => (prev - 1 + usernames.length) % usernames.length);
   };
 
+  // get data for currently selected player
   const currentUsername = usernames[currentIndex];
   const currentFrame = frameMap.get(currentUsername);
   const currentStats = playerStats.find((p) => p.username === currentUsername);
 
   return (
+    // full-screen dark spectator interface
     <div
       style={{
         backgroundColor: "#000",
@@ -131,6 +142,7 @@ export default function SpectatorStreaming() {
         position: "relative",
       }}
     >
+      {/* Current player indicator with loading animation */}
       <h2 style={{ marginBottom: "20px" }}>
         {currentUsername
           ? `Viewing: ${currentUsername}`
@@ -145,6 +157,7 @@ export default function SpectatorStreaming() {
       </h2>
       <h2>{gameTimeString}</h2>
 
+       {/* Current player's camera view with scope overlay */}
       {currentFrame && (
         <div style={{ position: "relative", width: "90%", maxWidth: "800px" }}>
           <img
@@ -160,8 +173,9 @@ export default function SpectatorStreaming() {
               display: "block",
             }}
           />
+          {/* Crosshair overlay for immersive viewing */}
           <img
-            src="/scope.png"
+            src="images/scope.png"
             alt="Scope Reticle"
             className="scope-reticle"
             style={{
@@ -177,7 +191,7 @@ export default function SpectatorStreaming() {
           />
         </div>
       )}
-
+     {/* Current player's game performance metrics */}
       {currentStats && (
         <div
           style={{ marginTop: "20px", fontSize: "18px", textAlign: "center" }}
@@ -193,7 +207,7 @@ export default function SpectatorStreaming() {
           </p>
         </div>
       )}
-
+    {/* Previous/Next player buttons (only show if multiple players) */}
       {usernames.length > 1 && (
         <div style={{ marginTop: "20px", display: "flex", gap: "40px" }}>
           <button onClick={goToPrev} style={buttonStyle}>
@@ -205,6 +219,7 @@ export default function SpectatorStreaming() {
         </div>
       )}
 
+     {/* Return to main menu */}
       <button
         onClick={() => router.push("/")}
         style={{
@@ -257,6 +272,7 @@ export default function SpectatorStreaming() {
   );
 }
 
+// Button styling for navigation controls
 const buttonStyle = {
   fontSize: "20px",
   padding: "10px 20px",
