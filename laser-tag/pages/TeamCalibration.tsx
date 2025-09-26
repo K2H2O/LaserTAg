@@ -11,64 +11,91 @@ export default function TeamCalibration() {
   const [capturedPose, setCapturedPose] = useState<Keypoint[] | null>(null);
   const [username, setUsername] = useState("");
   const lastSentColorRef = useRef<string | null>(null); // Ref to track last sent color
+  const detectorRef = useRef<poseDetection.PoseDetector | null>(null); // Ref for detector instance
 
   const router = useRouter();
   const { gameCode } = router.query;
 
   useEffect(() => {
-    let detectorInstance;
+    let isComponentMounted = true;
 
     async function init() {
-    try {
-      await tf.ready();
-      
-      tf.setBackend('cpu');
+      try {
+        await tf.ready();
+        await tf.setBackend('webgl');
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user" },
-        audio: false,
-      }).catch((error) => {
-        if (error.name === "NotReadableError") {
-          console.error("Camera access failed: Another application may be using it or permissions were denied. Please check and retry.");
-          alert("Failed to access camera. Ensure no other app is using it and grant camera permissions.");
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user" },
+          audio: false,
+        }).catch((error) => {
+          if (error.name === "NotReadableError") {
+            console.error("Camera access failed: Another application may be using it or permissions were denied. Please check and retry.");
+            alert("Failed to access camera. Ensure no other app is using it and grant camera permissions.");
+          } else {
+            console.error("Error accessing media devices:", error);
+            alert("Failed to access camera. Please check your device or browser settings.");
+          }
+          throw error; // Re-throw to stop execution
+        });
+
+        const video = videoRef.current;
+        if (video) {
+          video.srcObject = stream;
+          await video.play();
         } else {
-          console.error("Error accessing media devices:", error);
-          alert("Failed to access camera. Please check your device or browser settings.");
+          console.error("Video ref is not assigned yet");
+          return;
         }
-        throw error; // Re-throw to stop execution
-      });
 
-      const video = videoRef.current;
-      if (video) {
-        video.srcObject = stream;
-        await video.play();
-      } else {
-        console.error("Video ref is not assigned yet");
-        return;
-      }
-
-      const canvas = canvasRef.current;
-      if (canvas) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-      }
-
-      detectorInstance = await poseDetection.createDetector(
-        poseDetection.SupportedModels.MoveNet,
-        {
-          modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+        const canvas = canvasRef.current;
+        if (canvas) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
         }
-      );
 
-      setDetector(detectorInstance);
-      renderLoop(detectorInstance);
-    } catch (error) {
-      console.error("Initialization failed:", error);
+        const detectorInstance = await poseDetection.createDetector(
+          poseDetection.SupportedModels.MoveNet,
+          {
+            modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+          }
+        );
+
+        detectorRef.current = detectorInstance;
+        setDetector(detectorInstance);
+        
+        if (detectorInstance) {
+          renderLoop(detectorInstance);
+        }
+      } catch (error) {
+        console.error("Initialization failed:", error);
+      }
     }
-  }
 
-  init();
-}, []);
+    init();
+
+    // Cleanup function
+    return () => {
+      isComponentMounted = false;
+
+      // Stop video stream
+      const video = videoRef.current;
+      if (video && video.srcObject) {
+        const stream = video.srcObject as MediaStream;
+        stream.getTracks().forEach(track => track.stop());
+        video.srcObject = null;
+      }
+      
+      // Dispose detector
+      if (detectorRef.current) {
+        detectorRef.current.dispose();
+        detectorRef.current = null;
+      }
+
+      // Clean up any remaining tensors
+      tf.engine().endScope();
+      tf.disposeVariables();
+    };
+  }, []);
 
   function getKeypoint(keypoints: Keypoint[], name: string): Keypoint | undefined {
     return keypoints.find((k) => k.name === name);
@@ -175,38 +202,72 @@ export default function TeamCalibration() {
 
   async function renderLoop(detector: poseDetection.PoseDetector) {
     const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d",{willReadFrequently: true});
-
+    const ctx = canvas?.getContext("2d", { willReadFrequently: true });
     const video = videoRef.current;
+    let animationFrameId: number;
+    let isActive = true;
 
     async function draw() {
-      if (!ctx || !canvas) {
-        console.error("Canvas or context is not available");
+      if (!isActive || !ctx || !canvas || !video) {
         return;
       }
 
-      if (!video) {
-        console.error("Video ref is not available");
-        return;
+      let tensors: tf.Tensor[] = [];
+      try {
+        // Clear and draw video frame
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        // Create tensor from video frame
+        const videoTensor = tf.browser.fromPixels(video);
+        tensors.push(videoTensor);
+
+        // Perform pose detection
+        const poses = await detector.estimatePoses(videoTensor);
+        
+        if (poses.length > 0 && isActive) {
+          const keypoints = [...poses[0].keypoints]; // Deep copy keypoints
+          drawTorsoBox(ctx, keypoints);
+          drawKeypoints(ctx, keypoints);
+          setCapturedPose(keypoints);
+        }
+      } catch (error) {
+        console.error("Error in pose estimation:", error);
+      } finally {
+        // Clean up tensors
+        tensors.forEach(tensor => {
+          try {
+            if (tensor && !tensor.isDisposed) {
+              tensor.dispose();
+            }
+          } catch (e) {
+            console.warn("Error disposing tensor:", e);
+          }
+        });
+        // Clean up any other tensors
+        try {
+          tf.disposeVariables();
+        } catch (e) {
+          console.warn("Error disposing variables:", e);
+        }
       }
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      await tf.engine().startScope();
-
-      const poses = await detector.estimatePoses(video);
-      if (poses.length > 0) {
-        const keypoints = poses[0].keypoints;
-        drawTorsoBox(ctx, keypoints);
-        drawKeypoints(ctx, keypoints);
-        setCapturedPose(keypoints);
+      // Only request next frame if component is still mounted
+      if (isActive) {
+        animationFrameId = requestAnimationFrame(draw);
       }
-
-      await tf.engine().endScope();
-      requestAnimationFrame(draw);
     }
 
+    // Start the animation loop
     draw();
+
+    // Cleanup function
+    return () => {
+      isActive = false;
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
+    };
   }
 
   function drawKeypoints(ctx: CanvasRenderingContext2D, keypoints: Keypoint[]) {

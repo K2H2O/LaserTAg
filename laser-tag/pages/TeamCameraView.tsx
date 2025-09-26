@@ -19,7 +19,13 @@ interface Player {
 interface Team {
   teamId: number;
   players: Player[];
-  score: number; // Sum of points of all players in the team
+  score: number;
+}
+
+interface PowerupData {
+  type: string;
+  duration: number;
+  effect: string;
 }
 
 interface CanvasWithHitData extends HTMLCanvasElement {
@@ -34,7 +40,7 @@ export default function TeamCameraView() {
   const detectorRef = useRef<poseDetection.PoseDetector | null>(null);
   const [gunType, setGunType] = useState<"pistol" | "shotgun" | "sniper">("pistol");
   const [zoomEnabled, setZoomEnabled] = useState(false);
-  const [activePowerup, setActivePowerup] = useState<string | null>(null);
+  const [activePowerup, setActivePowerup] = useState<PowerupData | null>(null);
 
   // Game state
   const [gameTimeString, setGameTimeString] = useState("00:00");
@@ -69,10 +75,12 @@ export default function TeamCameraView() {
   const highestHitsGiven = allPlayers.reduce((max, p) => 
     p.hitsGiven > (max?.hitsGiven || 0) ? p : max, null as Player | null);
 
-  // Socket.IO ref
+  // Socket.IO and game state refs
   type AudioKey = "pistol" | "shotgun" | "sniper" | "ouch" | "powerup";
   const socketRef = useRef<Socket | null>(null);
   const audioRef = useRef<Record<AudioKey, HTMLAudioElement> | null>(null);
+  const isGameRunning = useRef(true);
+  const isRedirecting = useRef(false);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -99,88 +107,229 @@ export default function TeamCameraView() {
   }, []);
 
   // Initialize Socket.IO connection & listen for game updates
+  // Socket.IO connection and game state management
   useEffect(() => {
-    if (username == null || gameCode == null || color == null || teamId == null) {
-      console.warn("Missing username, gameCode, color, or teamId");
+    const isGameRunning = useRef(true);
+    const isRedirecting = useRef(false);
+
+    // Only setup socket if all parameters are available
+    if (!router.isReady) return;
+
+    const queryParams = router.query;
+    const username = queryParams.username?.toString();
+    const gameCode = queryParams.gameCode?.toString();
+    const color = queryParams.color?.toString();
+    const teamId = queryParams.teamId?.toString();
+
+    if (!username || !gameCode || !color || !teamId) {
+      console.warn("Missing required parameters");
       return;
     }
-    
-    // Initialize Socket.IO connection
-    const socket = initializeSocket(gameCode as string, username as string, color as string, teamId as string);
+
+    console.log("Initializing socket connection...");
+    const socket = initializeSocket(gameCode, username, color, teamId);
     socketRef.current = socket;
 
-    // Handle connection events
-    socket.on('connect', () => console.log("🔗 Connected to game server"));
-    socket.on('disconnect', () => console.log("❌ Disconnected from game server"));
+    // Socket event handlers
+    const onConnect = () => {
+      console.log("Socket connected:", socket.id);
+    };
 
-    // Handle game events
-    socket.on('gameUpdate', (data: { teams: Team[], timeLeft: number }) => {
-      const { teams, timeLeft } = data;
-      // Calculate team scores client-side
-      const teamsWithScores = teams.map((team: Team) => ({
-        ...team,
-        score: team.players.reduce((sum: number, p: Player) => sum + p.points, 0)
-      }));
-      setGameTimeString(
-        `${String(Math.floor(timeLeft / 60)).padStart(2, "0")}:${String(
-          timeLeft % 60
-        ).padStart(2, "0")}`
-      );
-      setLeaderboardData(teamsWithScores);
-        if (timeLeft === 0) {
-          router.push({
-            pathname: "/PlayerLeaderboard",
-            query: { username, gameCode, color, teamId },
-          });
-        }
-    });
+    const onPowerupCollected = (powerupData: PowerupData) => {
+      if (!isGameRunning.current) return;
+      setActivePowerup(powerupData);
+      
+      setTimeout(() => {
+        if (isGameRunning.current) setActivePowerup(null);
+      }, powerupData.duration);
+    };
 
-    // Handle hit events
-    socket.on('hit', (data: { player: string, target: string, weapon: string }) => {
+    const onGameEnd = () => {
+      if (!isGameRunning.current || isRedirecting.current) return;
+      
+      console.log("Game ended, redirecting to leaderboard...");
+      isRedirecting.current = true;
+
+      const params = new URLSearchParams({
+        username,
+        gameCode,
+        teamId,
+        color
+      });
+
+      window.location.replace(`/TeamLeaderboard?${params.toString()}`);
+    };
+
+    const onDisconnect = () => {
+      console.log("Socket disconnected");
+    };
+
+    const onConnectError = (error: Error) => {
+      console.error("Socket connection error:", error);
+    };
+
+    // Attach event listeners
+    socket.on("connect", onConnect);
+    socket.on("powerupCollected", onPowerupCollected);
+    socket.on("gameEnd", onGameEnd);
+    socket.on("disconnect", onDisconnect);
+    socket.on("connect_error", onConnectError);
+
+    // Cleanup function
+    return () => {
+      console.log("Cleaning up socket connection");
+      isGameRunning.current = false;
+      
+      // Remove event listeners
+      socket.off("connect", onConnect);
+      socket.off("powerupCollected", onPowerupCollected);
+      socket.off("gameEnd", onGameEnd);
+      socket.off("disconnect", onDisconnect);
+      socket.off("connect_error", onConnectError);
+
+      // Disconnect socket
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+    };
+  }, [router.isReady, router.query]);
+
+  // Socket event handlers setup
+  useEffect(() => {
+    // Reset state flags
+    isGameRunning.current = true;
+    isRedirecting.current = false;
+
+    if (!router.isReady) return;
+
+    const queryParams = router.query;
+    const username = queryParams.username?.toString();
+    const gameCode = queryParams.gameCode?.toString();
+    const color = queryParams.color?.toString();
+    const teamId = queryParams.teamId?.toString();
+
+    if (!username || !gameCode || !color || !teamId) {
+      console.warn("Missing required parameters");
+      return;
+    }
+
+    try {
+      console.log("Setting up socket connection...");
+      const socket = initializeSocket(gameCode, username, color, teamId);
+      socketRef.current = socket;
+
+      // Event Handlers
+      const onHit = (data: { player: string, target: string, weapon: string }) => {
+        if (!isGameRunning.current) return;
         const { player, target, weapon } = data;
         console.log(`🎯 ${player} hit ${target} with ${weapon}`);
 
-        // If I am the one who got hit
-        if (target === username) {
-            const ouch = audioRef.current?.ouch;
-            if (ouch) {
-                ouch.currentTime = 0;
-                ouch.play().catch((e) => console.warn("Ouch sound failed:", e));
-            }
+        if (target === username && audioRef.current?.ouch) {
+          const sound = audioRef.current.ouch;
+          sound.currentTime = 0;
+          sound.play().catch(err => console.warn("Sound failed:", err));
         }
-    });
+      };
 
-    // Handle powerup events
-    socket.on('powerup', (data: { powerup: string, duration: number }) => {
+      const onPowerup = (data: { powerup: string, duration: number }) => {
+        if (!isGameRunning.current) return;
         const { powerup, duration } = data;
+        
+        const powerupData: PowerupData = {
+          type: powerup,
+          duration: duration * 1000,
+          effect: powerup
+        };
+        
         console.log(`⚡ Powerup received: ${powerup} for ${duration}s`);
-        setActivePowerup(powerup);
+        setActivePowerup(powerupData);
 
-        const powerupSound = audioRef.current?.powerup;
-        if (powerupSound) {
-            powerupSound.currentTime = 0;
-            powerupSound.play().catch((e) => console.warn("Powerup sound failed:", e));
+        if (audioRef.current?.powerup) {
+          const sound = audioRef.current.powerup;
+          sound.currentTime = 0;
+          sound.play().catch(err => console.warn("Sound failed:", err));
         }
 
-        setTimeout(() => setActivePowerup(null), duration * 1000);
-    });
+        setTimeout(() => {
+          if (isGameRunning.current) setActivePowerup(null);
+        }, duration * 1000);
+      };
 
-    // Handle errors
-    socket.on('connect_error', (error: Error) => {
-        console.error("❌ Connection error:", error);
-    });
+      const onGameUpdate = (data: { teams: Team[], timeLeft: number }) => {
+        if (!isGameRunning.current || isRedirecting.current) return;
 
-    socket.on('error', (error: { message: string }) => {
-        console.error("❌ Socket error:", error);
-        alert(error.message || "An error occurred");
-    });
+        const { teams, timeLeft } = data;
+        if (typeof timeLeft !== 'number' || isNaN(timeLeft)) {
+          console.warn('⚠️ Invalid timeLeft value:', timeLeft);
+          return;
+        }
 
-    // Cleanup on component unmount
-    return () => {
-        closeSocket();
-        socketRef.current = null;
-    };
-  }, [username, gameCode, color, teamId]);
+        // Update team scores
+        const teamsWithScores = teams.map(team => ({
+          ...team,
+          score: team.players.reduce((sum, p) => sum + p.points, 0)
+        }));
+        setLeaderboardData(teamsWithScores);
+
+        // Update time display
+        const minutes = Math.floor(timeLeft / 60);
+        const seconds = timeLeft % 60;
+        setGameTimeString(`${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`);
+        
+        // Handle game end
+        if (timeLeft <= 0 && !isRedirecting.current) {
+          console.log('🏁 Game ended, redirecting...');
+          isRedirecting.current = true;
+
+          // Navigate to leaderboard
+          const params = new URLSearchParams({
+            username,
+            gameCode,
+            teamId,
+            color
+          });
+          window.location.replace(`/TeamLeaderboard?${params.toString()}`);
+        }
+      };
+
+      // Event listeners
+      socket.on('connect', () => console.log("🔗 Connected to game server:", socket.id));
+      socket.on('disconnect', () => console.log("❌ Disconnected from game server"));
+      socket.on('error', (error: Error) => console.error('Socket error:', error));
+      socket.on('connect_error', (error: Error) => console.error("Connection error:", error));
+      
+      socket.on('hit', onHit);
+      socket.on('powerup', onPowerup);
+      socket.on('gameUpdate', onGameUpdate);
+
+      // Cleanup function
+      return () => {
+        console.log('Cleaning up socket connection');
+        isGameRunning.current = false;
+
+        // Remove event listeners
+        socket.off('hit', onHit);
+        socket.off('powerup', onPowerup);
+        socket.off('gameUpdate', onGameUpdate);
+        socket.off('connect');
+        socket.off('disconnect');
+        socket.off('error');
+        socket.off('connect_error');
+
+        // Disconnect socket
+        if (socketRef.current) {
+          socketRef.current.disconnect();
+          socketRef.current = null;
+        }
+      };
+
+    } catch (error) {
+      console.error('Failed to initialize socket:', error);
+      alert('Failed to connect to game server. Please try refreshing the page.');
+      return () => { isGameRunning.current = false; };
+    }
+  }, [router.isReady, router.query]);
 
   useEffect(() => {
     async function loadDetector() {
@@ -590,7 +739,7 @@ export default function TeamCameraView() {
             zIndex: 10,
           }}
         >
-          Powerup: {activePowerup}
+          Powerup: {activePowerup?.type || "None"}
         </div>
       )}
 
