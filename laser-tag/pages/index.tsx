@@ -128,7 +128,7 @@ export default function LandingPage() {
     //  },
     //});
     router.push({
-      pathname: "/spectator_stream",
+      pathname: "/SpectatorStreaming",
       query: { gameCode, soundEnabled: isSoundEnabled.toString() },
     });
   };
