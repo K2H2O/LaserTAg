@@ -1,4 +1,3 @@
-/* global cv */
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/router";
 import * as tf from "@tensorflow/tfjs";
@@ -12,17 +11,34 @@ interface Player {
   points: number;
   hitsGiven: number;
   hitsTaken: number;
+  health?: number;
 }
 
 interface Team {
   teamId: number;
   players: Player[];
-  score: number; // Sum of points of all players in the team
+  score: number;
 }
 
 interface CanvasWithHitData extends HTMLCanvasElement {
   isPersonCentered: boolean;
   modeColor: string;
+}
+
+// GPS/Minimap interfaces
+interface PlayerPosition {
+  username: string;
+  latitude: number;
+  longitude: number;
+  color: string;
+  lastUpdated: number;
+}
+
+interface MinimapBounds {
+  minLat: number;
+  maxLat: number;
+  minLon: number;
+  maxLon: number;
 }
 
 export default function TeamCameraView() {
@@ -34,6 +50,14 @@ export default function TeamCameraView() {
   const [zoomEnabled, setZoomEnabled] = useState(false);
   const [activePowerup, setActivePowerup] = useState(null);
 
+  // ADDED: Health system
+  const [health, setHealth] = useState(100);
+
+  // ADDED: GPS/Minimap states
+  const [playerPositions, setPlayerPositions] = useState<PlayerPosition[]>([]);
+  const [myPosition, setMyPosition] = useState<{latitude: number; longitude: number} | null>(null);
+  const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'prompt'>('prompt');
+
   // Game state
   const [gameTimeString, setGameTimeString] = useState("00:00");
   const gunConfig = {
@@ -44,33 +68,121 @@ export default function TeamCameraView() {
   const [ammo, setAmmo] = useState(gunConfig["pistol"].ammo);
   const [isReloading, setIsReloading] = useState(false);
 
-  // Extract URL state params
   const router = useRouter();
   const { username, gameCode, color, teamId } = router.query;
 
-  // Leaderboard state (now team-based)
   const [leaderboardData, setLeaderboardData] = useState<Team[]>([]);
   
-  // Derived data for leaderboard display
-  const sortedTeams = [...leaderboardData]
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3);
-  const currentPlayer = leaderboardData
-    .flatMap(team => team.players)
-    .find((p) => p.username === username);
-  const isDead = currentPlayer?.points === 0;
+  const sortedTeams = [...leaderboardData].sort((a, b) => b.score - a.score).slice(0, 3);
+  const currentPlayer = leaderboardData.flatMap(team => team.players).find((p) => p.username === username);
+  
+  // UPDATED: Use health instead of points for death determination
+  const isDead = health <= 10;
 
-  // Find player with most hits taken and highest hits given
   const allPlayers = leaderboardData.flatMap(team => team.players);
   const mostHitsTaken = allPlayers.reduce((max, p) => 
     p.hitsTaken > (max?.hitsTaken || 0) ? p : max, null as Player | null);
   const highestHitsGiven = allPlayers.reduce((max, p) => 
     p.hitsGiven > (max?.hitsGiven || 0) ? p : max, null as Player | null);
 
-  // WebSocket ref
   type AudioKey = "pistol" | "shotgun" | "sniper" | "ouch" | "powerup";
   const socketRef = useRef<WebSocket | null>(null);
   const audioRef = useRef<Record<AudioKey, HTMLAudioElement> | null>(null);
+
+  // ADDED: Health bar color function
+  const getHealthBarColor = (healthValue: number): string => {
+    if (healthValue <= 30) {
+      return "#ff4444";
+    } else if (healthValue <= 70) {
+      return "#ffaa00";
+    } else {
+      return "#44ff44";
+    }
+  };
+
+  // ADDED: Forfeit handler
+  const handleForfeit = () => {
+    const confirmForfeit = window.confirm("Are you sure you want to forfeit the game? This will end your participation.");
+    if (confirmForfeit) {
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({ type: "forfeit", username }));
+      }
+      router.push({
+        pathname: "/PlayerLeaderboard",
+        query: { teams: JSON.stringify(leaderboardData) },
+      });
+    }
+  };
+
+  // ADDED: GPS functions
+  const requestLocationPermission = async () => {
+    if (!navigator.geolocation) {
+      console.warn("Geolocation is not supported by this browser.");
+      return false;
+    }
+
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 60000
+        });
+      });
+      
+      setMyPosition({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude
+      });
+      setLocationPermission('granted');
+      return true;
+    } catch (error) {
+      console.error("Location permission denied:", error);
+      setLocationPermission('denied');
+      return false;
+    }
+  };
+
+  const sendPosition = (latitude: number, longitude: number) => {
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        type: "playerPosition",
+        username,
+        latitude,
+        longitude,
+        timestamp: Date.now()
+      }));
+    }
+  };
+
+  const calculateMinimapBounds = (positions: PlayerPosition[]): MinimapBounds => {
+    if (positions.length === 0) {
+      return { minLat: 0, maxLat: 0, minLon: 0, maxLon: 0 };
+    }
+
+    const lats = positions.map(p => p.latitude);
+    const lons = positions.map(p => p.longitude);
+    
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLon = Math.min(...lons);
+    const maxLon = Math.max(...lons);
+    
+    const padding = 0.0005;
+    
+    return {
+      minLat: minLat - padding,
+      maxLat: maxLat + padding,
+      minLon: minLon - padding,
+      maxLon: maxLon + padding
+    };
+  };
+
+  const gpsToMinimap = (lat: number, lon: number, bounds: MinimapBounds, mapSize: number) => {
+    const x = ((lon - bounds.minLon) / (bounds.maxLon - bounds.minLon)) * mapSize;
+    const y = mapSize - ((lat - bounds.minLat) / (bounds.maxLat - bounds.minLat)) * mapSize;
+    return { x, y };
+  };
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -96,12 +208,49 @@ export default function TeamCameraView() {
     }
   }, []);
 
-  // Connect to WebSocket & listen for game updates
+  // ADDED: Location tracking
+  useEffect(() => {
+    let watchId: number | null = null;
+
+    const startLocationTracking = async () => {
+      const hasPermission = await requestLocationPermission();
+      if (!hasPermission) return;
+
+      watchId = navigator.geolocation.watchPosition(
+        (position) => {
+          const newPos = {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude
+          };
+          setMyPosition(newPos);
+          sendPosition(newPos.latitude, newPos.longitude);
+        },
+        (error) => {
+          console.error("Location tracking error:", error);
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: 5000
+        }
+      );
+    };
+
+    startLocationTracking();
+
+    return () => {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+    };
+  }, [username]);
+
   useEffect(() => {
     if (username == null || gameCode == null || color == null || teamId == null) {
       console.warn("Missing username, gameCode, color, or teamId");
       return;
     }
+    
     const socket = new WebSocket(
       `wss://bbd-lasertag.onrender.com/session/${gameCode}?username=${username}&color=${color}&teamId=${teamId}`
     );
@@ -110,39 +259,55 @@ export default function TeamCameraView() {
     socket.onopen = () => console.log("Connected to WebSocket");
     socket.onmessage = (event) => {
       const data = JSON.parse(event.data);
+      
       if (data.type === "gameUpdate") {
         const { teams, timeLeft } = data;
-        // Calculate team scores client-side
-        const teamsWithScores = teams.map((team: Team) => ({
-          ...team,
-          score: team.players.reduce((sum: number, p: Player) => sum + p.points, 0)
-        }));
-        setGameTimeString(
-          `${String(Math.floor(timeLeft / 60)).padStart(2, "0")}:${String(
-            timeLeft % 60
-          ).padStart(2, "0")}`
-        );
-        setLeaderboardData(teamsWithScores);
-        if (timeLeft === 0) {
-          router.push({
-            pathname: "/PlayerLeaderboard",
-            query: { teams: JSON.stringify(teamsWithScores) },
-          });
-        }
-      }
+       const teamsWithScores = (teams || []).map((team: Team) => ({
+    ...team,
+    score: team.players.reduce((sum: number, p: Player) => sum + p.points, 0)
+  }));
+  
+  setGameTimeString(
+    `${String(Math.floor(timeLeft / 60)).padStart(2, "0")}:${String(
+      timeLeft % 60
+    ).padStart(2, "0")}`
+  );
+  setLeaderboardData(teamsWithScores);
+
+        // ADDED: Update health from server
+       const currentPlayerData = (teams || []).flatMap((team: Team) => team.players).find((p: Player) => p.username === username);
+  
+  if (currentPlayerData && currentPlayerData.health !== undefined) {
+    setHealth(currentPlayerData.health);
+  }
+
+  if (timeLeft === 0) {
+    router.push({
+      pathname: "/PlayerLeaderboard",
+      query: { teams: JSON.stringify(teamsWithScores) },
+    });
+  }
+}
+      
       if (data.type === "hit") {
         const { player, target, weapon } = data;
         console.log(`🎯 ${player} hit ${target} with ${weapon}`);
 
-        // If I am the one who got hit
         if (target === username) {
           const ouch = audioRef.current?.ouch;
           if (ouch) {
             ouch.currentTime = 0;
             ouch.play().catch((e) => console.warn("Ouch sound failed:", e));
           }
+          // ADDED: Health decrease on hit
+          setHealth(prevHealth => Math.max(10, prevHealth - 10));
+        }
+        // ADDED: Health increase when hitting others
+        if (player === username) {
+          setHealth(prevHealth => Math.min(100, prevHealth + 10));
         }
       }
+      
       if (data.type === "powerup") {
         const { powerup, duration } = data;
         console.log(`⚡ Powerup received: ${powerup} for ${duration}s`);
@@ -151,16 +316,30 @@ export default function TeamCameraView() {
         const powerupSound = audioRef.current?.powerup;
         if (powerupSound) {
           powerupSound.currentTime = 0;
-          powerupSound
-            .play()
-            .catch((e) => console.warn("Powerup sound failed:", e));
+          powerupSound.play().catch((e) => console.warn("Powerup sound failed:", e));
         }
 
         setTimeout(() => {
           setActivePowerup(null);
         }, duration * 1000);
       }
+
+      // ADDED: Handle player positions
+      if (data.type === "playerPositions") {
+        const { positions } = data;
+        setPlayerPositions(positions.map((pos: any) => ({
+          ...pos,
+          lastUpdated: Date.now()
+        })));
+      }
+
+      // ADDED: Handle forfeit
+      if (data.type === "playerForfeited") {
+        const { forfeitedPlayer } = data;
+        console.log(`🏳️ Player ${forfeitedPlayer} has forfeited the game`);
+      }
     };
+    
     socket.onclose = () => console.log("WebSocket closed");
     socket.onerror = (e) => console.error("WebSocket error", e);
 
@@ -209,7 +388,6 @@ export default function TeamCameraView() {
     };
   }, []);
 
-  // Map RGB to closest CSS color name
   function getClosestColorName(rgbString: string) {
     const cssColors = {
       white: [255, 255, 255],
@@ -238,13 +416,10 @@ export default function TeamCameraView() {
         closestName = name;
       }
     }
-    console.log(
-      `camv RGB string: ${rgbString} | closest color: ${closestName}`
-    );
+    console.log(`camv RGB string: ${rgbString} | closest color: ${closestName}`);
     return closestName;
   }
 
-  // Called when a hit is detected
   function hitDetected(targetColor: string, msg: string) {
     if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
       console.warn("WebSocket not open; hit not sent");
@@ -255,12 +430,11 @@ export default function TeamCameraView() {
       weapon: gunType,
       shape: msg,
       color: targetColor,
-      teamId: teamId, // Include teamId for server-side processing
+      teamId: teamId,
     };
     socketRef.current.send(JSON.stringify(hitPayload));
   }
 
-  // Check if torso is centered and trigger hit detection
   function checkHit(canvas: CanvasWithHitData) {
     if (canvas.isPersonCentered) {
       const colorName = getClosestColorName(canvas.modeColor);
@@ -268,7 +442,6 @@ export default function TeamCameraView() {
     }
   }
 
-  // Process video frame for pose detection
   async function processVideoOnce(video: HTMLVideoElement, canvas: CanvasWithHitData, detector: poseDetection.PoseDetector) {
     const width = video.videoWidth;
     const height = video.videoHeight;
@@ -320,6 +493,13 @@ export default function TeamCameraView() {
       if (width < 1 || height < 1) return "aqua";
 
       if (!ctx) return;
+      
+      // ADDED: Canvas performance optimization
+      const canvas = ctx.canvas as HTMLCanvasElement;
+      if ('willReadFrequently' in canvas) {
+     (canvas as any).willReadFrequently = true;
+    }
+      
       const imgData = ctx.getImageData(minX, minY, width, height);
       const colorCount = new Map();
 
@@ -369,17 +549,13 @@ export default function TeamCameraView() {
     ctx.fill();
 
     function pointInPolygon(point: [number, number], vs: Array<{ x: number; y: number }>) {
-      let x = point[0],
-        y = point[1];
+      let x = point[0], y = point[1];
       let inside = false;
       for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
-        let xi = vs[i].x,
-          yi = vs[i].y;
-        let xj = vs[j].x,
-          yj = vs[j].y;
+        let xi = vs[i].x, yi = vs[i].y;
+        let xj = vs[j].x, yj = vs[j].y;
 
-        let intersect =
-          yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+        let intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
         if (intersect) inside = !inside;
       }
       return inside;
@@ -420,8 +596,7 @@ export default function TeamCameraView() {
     setIsReloading(false);
     setZoomEnabled(false);
     if (videoRef.current) {
-      videoRef.current.style.transform =
-        type === "sniper" ? "scale(3)" : "scale(1)";
+      videoRef.current.style.transform = type === "sniper" ? "scale(3)" : "scale(1)";
       videoRef.current.style.transformOrigin = "center center";
     }
   };
@@ -500,14 +675,13 @@ export default function TeamCameraView() {
           ctx.drawImage(video, 0, 0);
           const frame = canvas.toDataURL("image/jpeg", 0.5);
 
-          socket.send(
-            JSON.stringify({
-              type: "cameraFrame",
-              username,
-              teamId,
-              frame,
-            })
-          );
+          socket.send(JSON.stringify({
+            type: "cameraFrame",
+            username,
+            teamId,
+            frame,
+            health, // ADDED: Include health in frame data
+          }));
         }, 100);
       } else {
         const waitForSocket = setInterval(() => {
@@ -521,7 +695,142 @@ export default function TeamCameraView() {
 
     sendFrames();
     return () => clearInterval(intervalId);
-  }, [username, teamId]);
+  }, [username, teamId, health]);
+
+  // ADDED: Minimap Component
+  const Minimap = () => {
+    const mapSize = 120;
+    const allPositions = [
+      ...playerPositions,
+      ...(myPosition ? [{
+        username: username as string,
+        latitude: myPosition.latitude,
+        longitude: myPosition.longitude,
+        color: color as string,
+        lastUpdated: Date.now()
+      }] : [])
+    ];
+
+    if (allPositions.length === 0) {
+      return (
+        <div
+          style={{
+            width: mapSize,
+            height: mapSize,
+            backgroundColor: "rgba(0, 0, 0, 0.8)",
+            border: "2px solid #fff",
+            borderRadius: "10px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#fff",
+            fontSize: "10px",
+            textAlign: "center",
+          }}
+        >
+          No GPS Data
+        </div>
+      );
+    }
+
+    const bounds = calculateMinimapBounds(allPositions);
+
+    return (
+      <div
+        style={{
+          position: "relative",
+          width: mapSize,
+          height: mapSize,
+          backgroundColor: "rgba(50, 50, 50, 0.9)",
+          border: "2px solid #fff",
+          borderRadius: "10px",
+          overflow: "hidden",
+        }}
+      >
+        <svg width={mapSize} height={mapSize} style={{ position: "absolute", top: 0, left: 0 }}>
+          {[0, 1, 2, 3, 4].map(i => (
+            <line
+              key={`h${i}`}
+              x1={0}
+              y1={(i * mapSize) / 4}
+              x2={mapSize}
+              y2={(i * mapSize) / 4}
+              stroke="rgba(255,255,255,0.2)"
+              strokeWidth="1"
+            />
+          ))}
+          {[0, 1, 2, 3, 4].map(i => (
+            <line
+              key={`v${i}`}
+              x1={(i * mapSize) / 4}
+              y1={0}
+              x2={(i * mapSize) / 4}
+              y2={mapSize}
+              stroke="rgba(255,255,255,0.2)"
+              strokeWidth="1"
+            />
+          ))}
+        </svg>
+
+        {allPositions.map((player) => {
+          const { x, y } = gpsToMinimap(player.latitude, player.longitude, bounds, mapSize);
+          const isMe = player.username === username;
+          const isStale = Date.now() - player.lastUpdated > 30000;
+
+          return (
+            <div
+              key={player.username}
+              style={{
+                position: "absolute",
+                left: x - 4,
+                top: y - 4,
+                width: "8px",
+                height: "8px",
+                borderRadius: "50%",
+                backgroundColor: isStale ? "#666" : player.color,
+                border: isMe ? "2px solid #fff" : "1px solid #000",
+                boxShadow: isMe ? "0 0 6px rgba(255,255,255,0.8)" : "none",
+                zIndex: isMe ? 10 : 5,
+                opacity: isStale ? 0.5 : 1,
+              }}
+              title={`${player.username}${isStale ? ' (offline)' : ''}`}
+            >
+              {isMe && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: "-12px",
+                    left: "-6px",
+                    fontSize: "8px",
+                    color: "#fff",
+                    fontWeight: "bold",
+                    textShadow: "1px 1px 1px #000",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  YOU
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        <div
+          style={{
+            position: "absolute",
+            top: "4px",
+            right: "4px",
+            fontSize: "8px",
+            color: "#fff",
+            fontWeight: "bold",
+            textShadow: "1px 1px 1px #000",
+          }}
+        >
+          N
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div
@@ -618,6 +927,7 @@ export default function TeamCameraView() {
             opacity: 0.8,
           }}
         />
+        
         {isDead && (
           <div
             style={{
@@ -638,132 +948,210 @@ export default function TeamCameraView() {
           </div>
         )}
 
+        {/* UPDATED: Gun Area with Health Bar and Forfeit */}
         <div
           style={{
             position: "absolute",
-            bottom: "10%",
+            bottom: "5%",
             left: "50%",
             transform: "translateX(-50%)",
             zIndex: 10,
             display: "flex",
-            flexDirection: "row",
+            flexDirection: "column",
             alignItems: "center",
-            gap: "20px",
+            gap: "15px",
           }}
         >
+          {/* Gun and Ammo */}
           <div
             style={{
               display: "flex",
-              flexDirection: "column",
+              flexDirection: "row",
               alignItems: "center",
+              gap: "20px",
             }}
           >
-            <img
-              key={gunType}
-              src={
-                gunType === "shotgun"
-                  ? "/images/shotgun.png"
-                  : gunType === "sniper"
-                  ? "/images/sniper.png"
-                  : "/images/pistol.png"
-              }
-              alt="Shoot"
-              onClick={handleShoot}
-              style={{
-                width: "150px",
-                height: "150px",
-                cursor: isReloading ? "not-allowed" : "pointer",
-                transition: "transform 0.1s ease-in-out",
-              }}
-              onTouchStart={(e: React.TouchEvent<HTMLImageElement> | React.MouseEvent<HTMLImageElement>) => {
-                e.currentTarget.style.transform = "scale(0.95)";
-              }}
-              onTouchEnd={(e: React.TouchEvent<HTMLImageElement> | React.MouseEvent<HTMLImageElement>) => {
-                e.currentTarget.style.transform = "scale(1)";
-              }}
-            />
-            <div style={{ display: "flex", gap: "4px", marginTop: "10px" }}>
-              {Array.from({ length: ammo }).map((_, i) => (
-                <img
-                  key={i}
-                  src="/images/bullet.png"
-                  alt="Bullet"
-                  style={{ width: "40px", height: "40px" }}
-                />
-              ))}
-            </div>
-          </div>
-          {isReloading && (
             <div
               style={{
-                color: "#ff4444",
-                backgroundColor: "rgba(0,0,0,0.6)",
-                padding: "10px 16px",
-                borderRadius: "8px",
-                fontWeight: "bold",
-                textAlign: "center",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
               }}
             >
-              Reloading...
+              <img
+                key={gunType}
+                src={
+                  gunType === "shotgun"
+                    ? "/images/shotgun.png"
+                    : gunType === "sniper"
+                    ? "/images/sniper.png"
+                    : "/images/pistol.png"
+                }
+                alt="Shoot"
+                onClick={handleShoot}
+                style={{
+                  width: "150px",
+                  height: "150px",
+                  cursor: isReloading ? "not-allowed" : "pointer",
+                  transition: "transform 0.1s ease-in-out",
+                }}
+                onTouchStart={(e: React.TouchEvent<HTMLImageElement> | React.MouseEvent<HTMLImageElement>) => {
+                  e.currentTarget.style.transform = "scale(0.95)";
+                }}
+                onTouchEnd={(e: React.TouchEvent<HTMLImageElement> | React.MouseEvent<HTMLImageElement>) => {
+                  e.currentTarget.style.transform = "scale(1)";
+                }}
+              />
+              <div style={{ display: "flex", gap: "4px", marginTop: "10px" }}>
+                {Array.from({ length: ammo }).map((_, i) => (
+                  <img
+                    key={i}
+                    src="/images/bullet.png"
+                    alt="Bullet"
+                    style={{ width: "40px", height: "40px" }}
+                  />
+                ))}
+              </div>
             </div>
-          )}
-        </div>
+            {isReloading && (
+              <div
+                style={{
+                  color: "#ff4444",
+                  backgroundColor: "rgba(0,0,0,0.6)",
+                  padding: "10px 16px",
+                  borderRadius: "8px",
+                  fontWeight: "bold",
+                  textAlign: "center",
+                }}
+              >
+                Reloading...
+              </div>
+            )}
+          </div>
 
-        <div
-          style={{
-            position: "absolute",
-            bottom: "2%",
-            left: "50%",
-            transform: "translateX(-50%)",
-            display: "flex",
-            gap: "10px",
-            zIndex: 3,
-          }}
-        >
-          <button
-            onClick={() => selectGun("pistol")}
+          {/* ADDED: Health Bar */}
+          <div
             style={{
-              padding: "5px 10px",
-              fontSize: "14px",
-              borderRadius: "8px",
-              border: "1px solid #ccc",
-              backgroundColor: "#333",
-              color: "#fff",
-              cursor: "pointer",
+              width: "300px",
+              height: "20px",
+              backgroundColor: "rgba(0, 0, 0, 0.7)",
+              border: "2px solid #fff",
+              borderRadius: "10px",
+              overflow: "hidden",
+              position: "relative",
             }}
           >
-            Pistol
-          </button>
+            <div
+              style={{
+                width: `${health}%`,
+                height: "100%",
+                backgroundColor: getHealthBarColor(health),
+                transition: "all 0.3s ease-in-out",
+              }}
+            />
+            <div
+              style={{
+                position: "absolute",
+                top: "0",
+                left: "0",
+                width: "100%",
+                height: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "#fff",
+                fontWeight: "bold",
+                fontSize: "12px",
+                textShadow: "1px 1px 2px rgba(0,0,0,0.8)",
+              }}
+            >
+              {health}%
+            </div>
+          </div>
 
-          <button
-            onClick={() => selectGun("shotgun")}
+          {/* Gun Selection and Forfeit */}
+          <div
             style={{
-              padding: "5px 10px",
-              fontSize: "14px",
-              borderRadius: "8px",
-              border: "1px solid #ccc",
-              backgroundColor: "#333",
-              color: "#fff",
-              cursor: "pointer",
+              display: "flex",
+              gap: "10px",
+              alignItems: "center",
+              flexWrap: "wrap",
+              justifyContent: "center",
             }}
           >
-            Shotgun
-          </button>
+            <button
+              onClick={() => selectGun("pistol")}
+              style={{
+                padding: "5px 10px",
+                fontSize: "14px",
+                borderRadius: "8px",
+                border: "1px solid #ccc",
+                backgroundColor: "#333",
+                color: "#fff",
+                cursor: "pointer",
+              }}
+            >
+              Pistol
+            </button>
 
-          <button
-            onClick={() => selectGun("sniper")}
-            style={{
-              padding: "5px 10px",
-              fontSize: "14px",
-              borderRadius: "8px",
-              border: "1px solid #ccc",
-              backgroundColor: "#333",
-              color: "#fff",
-              cursor: "pointer",
-            }}
-          >
-            Sniper
-          </button>
+            <button
+              onClick={() => selectGun("shotgun")}
+              style={{
+                padding: "5px 10px",
+                fontSize: "14px",
+                borderRadius: "8px",
+                border: "1px solid #ccc",
+                backgroundColor: "#333",
+                color: "#fff",
+                cursor: "pointer",
+              }}
+            >
+              Shotgun
+            </button>
+
+            <button
+              onClick={() => selectGun("sniper")}
+              style={{
+                padding: "5px 10px",
+                fontSize: "14px",
+                borderRadius: "8px",
+                border: "1px solid #ccc",
+                backgroundColor: "#333",
+                color: "#fff",
+                cursor: "pointer",
+              }}
+            >
+              Sniper
+            </button>
+
+            {/* ADDED: Forfeit Button */}
+            <button
+              onClick={handleForfeit}
+              style={{
+                padding: "5px 15px",
+                fontSize: "14px",
+                borderRadius: "8px",
+                border: "2px solid #ff4444",
+                backgroundColor: "rgba(255, 68, 68, 0.8)",
+                color: "#fff",
+                cursor: "pointer",
+                fontWeight: "bold",
+                transition: "all 0.2s ease-in-out",
+              }}
+              onMouseOver={(e) => {
+                const target = e.target as HTMLButtonElement;
+                target.style.backgroundColor = "#ff4444";
+                target.style.transform = "scale(1.05)";
+              }}
+              onMouseOut={(e) => {
+                const target = e.target as HTMLButtonElement;
+                target.style.backgroundColor = "rgba(255, 68, 68, 0.8)";
+                target.style.transform = "scale(1)";
+              }}
+            >
+              Forfeit
+            </button>
+          </div>
         </div>
 
         <div
@@ -820,6 +1208,7 @@ export default function TeamCameraView() {
               {team.players.map((player) => (
                 <div key={player.username} style={{ marginLeft: "10px", fontSize: "12px" }}>
                   {player.username}: {player.points} pts
+                  {player.username === username && <span style={{ color: "#fff" }}> (YOU)</span>}
                 </div>
               ))}
             </div>
@@ -832,6 +1221,41 @@ export default function TeamCameraView() {
           {highestHitsGiven && (
             <div style={{ marginTop: "5px", fontStyle: "italic" }}>
               Most Hits Given: {highestHitsGiven.username} ({highestHitsGiven.hitsGiven})
+            </div>
+          )}
+        </div>
+
+        {/* ADDED: Minimap */}
+        <div
+          style={{
+            position: "absolute",
+            bottom: "2%",
+            left: "2%",
+            zIndex: 10,
+          }}
+        >
+          <div
+            style={{
+              marginBottom: "8px",
+              color: "#fff",
+              fontSize: "12px",
+              fontWeight: "bold",
+              textShadow: "1px 1px 2px rgba(0,0,0,0.8)",
+            }}
+          >
+            Map
+          </div>
+          <Minimap />
+          {locationPermission === 'denied' && (
+            <div
+              style={{
+                marginTop: "4px",
+                fontSize: "8px",
+                color: "#ffaa00",
+                textAlign: "center",
+              }}
+            >
+              Location disabled
             </div>
           )}
         </div>

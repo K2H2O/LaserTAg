@@ -10,7 +10,7 @@ export default function TeamCalibration() {
   const [detector, setDetector] = useState<poseDetection.PoseDetector | null>(null);
   const [capturedPose, setCapturedPose] = useState<Keypoint[] | null>(null);
   const [username, setUsername] = useState("");
-  const lastSentColorRef = useRef<string | null>(null); // Ref to track last sent color
+  const lastSentColorRef = useRef<string | null>(null);
 
   const router = useRouter();
   const { gameCode } = router.query;
@@ -19,54 +19,54 @@ export default function TeamCalibration() {
     let detectorInstance;
 
     async function init() {
-    try {
-      await tf.ready();
+      try {
+        await tf.ready();
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user" },
-        audio: false,
-      }).catch((error) => {
-        if (error.name === "NotReadableError") {
-          console.error("Camera access failed: Another application may be using it or permissions were denied. Please check and retry.");
-          alert("Failed to access camera. Ensure no other app is using it and grant camera permissions.");
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user" },
+          audio: false,
+        }).catch((error) => {
+          if (error.name === "NotReadableError") {
+            console.error("Camera access failed: Another application may be using it or permissions were denied. Please check and retry.");
+            alert("Failed to access camera. Ensure no other app is using it and grant camera permissions.");
+          } else {
+            console.error("Error accessing media devices:", error);
+            alert("Failed to access camera. Please check your device or browser settings.");
+          }
+          throw error;
+        });
+
+        const video = videoRef.current;
+        if (video) {
+          video.srcObject = stream;
+          await video.play();
         } else {
-          console.error("Error accessing media devices:", error);
-          alert("Failed to access camera. Please check your device or browser settings.");
+          console.error("Video ref is not assigned yet");
+          return;
         }
-        throw error; // Re-throw to stop execution
-      });
 
-      const video = videoRef.current;
-      if (video) {
-        video.srcObject = stream;
-        await video.play();
-      } else {
-        console.error("Video ref is not assigned yet");
-        return;
-      }
-
-      const canvas = canvasRef.current;
-      if (canvas) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-      }
-
-      detectorInstance = await poseDetection.createDetector(
-        poseDetection.SupportedModels.MoveNet,
-        {
-          modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+        const canvas = canvasRef.current;
+        if (canvas) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
         }
-      );
 
-      setDetector(detectorInstance);
-      renderLoop(detectorInstance);
-    } catch (error) {
-      console.error("Initialization failed:", error);
+        detectorInstance = await poseDetection.createDetector(
+          poseDetection.SupportedModels.MoveNet,
+          {
+            modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+          }
+        );
+
+        setDetector(detectorInstance);
+        renderLoop(detectorInstance);
+      } catch (error) {
+        console.error("Initialization failed:", error);
+      }
     }
-  }
 
-  init();
-}, []);
+    init();
+  }, []);
 
   function getKeypoint(keypoints: Keypoint[], name: string): Keypoint | undefined {
     return keypoints.find((k) => k.name === name);
@@ -79,6 +79,12 @@ export default function TeamCalibration() {
     const height = Math.floor(Math.abs(p1.y - p2.y));
 
     if (width < 1 || height < 1) return "aqua";
+
+    // FIXED: Add canvas performance optimization
+    const canvas = ctx.canvas as HTMLCanvasElement;
+    if ('willReadFrequently' in canvas) {
+  (canvas as any).willReadFrequently = true;
+  }
 
     const imgData = ctx.getImageData(minX, minY, width, height);
     const colorCount = new Map();
@@ -104,7 +110,6 @@ export default function TeamCalibration() {
     return modeColor;
   }
 
-  // Map RGB to closest CSS color name (used for hit color detection)
   function getClosestColorName(rgbString: string): string {
     const cssColors = {
       white: [255, 255, 255],
@@ -121,7 +126,7 @@ export default function TeamCalibration() {
     const matches = rgbString.match(/\d+/g);
     if (!matches || matches.length !== 3) {
       console.warn(`Invalid RGB string: ${rgbString}, defaulting to aqua`);
-      return "aqua"; // Fallback for invalid input
+      return "aqua";
     }
     const [r, g, b] = matches.map(Number);
 
@@ -138,7 +143,6 @@ export default function TeamCalibration() {
     return closestName;
   }
 
-  // Get team ID based on color
   function getTeamId(color: string): number {
     const teamMap: { [key: string]: number } = {
       red: 1,
@@ -152,10 +156,9 @@ export default function TeamCalibration() {
       white: 9,
       black: 10,
     };
-    return teamMap[color] || 11; // Default to team 4 if no match
+    return teamMap[color] || 11;
   }
 
-  // Check team size and return true if team has less than 4 players
   function canJoinTeam(teamId: number, gameCode: string): boolean {
     const teamSizesStr = localStorage.getItem(`teamSizes_${gameCode}`);
     const teamSizes: { [key: string]: number } = teamSizesStr ? JSON.parse(teamSizesStr) : {};
@@ -165,7 +168,6 @@ export default function TeamCalibration() {
       return false;
     }
     
-    // Increment team size
     teamSizes[teamId] = currentSize + 1;
     localStorage.setItem(`teamSizes_${gameCode}`, JSON.stringify(teamSizes));
     return true;
@@ -174,7 +176,6 @@ export default function TeamCalibration() {
   async function renderLoop(detector: poseDetection.PoseDetector) {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
-
     const video = videoRef.current;
 
     async function draw() {
@@ -187,6 +188,7 @@ export default function TeamCalibration() {
         console.error("Video ref is not available");
         return;
       }
+      
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
@@ -262,10 +264,12 @@ export default function TeamCalibration() {
       alert("Could not detect shoulders properly. Try again.");
       return;
     }
+    
     if (!ctx) {
       alert("Context not available");
       return;
     }
+    
     const modeColor = getModeColorFromPoints(ctx, ls, rs);
 
     if (!modeColor || modeColor === "aqua") {
@@ -273,22 +277,20 @@ export default function TeamCalibration() {
       return;
     }
 
-    lastSentColorRef.current = modeColor; // Save color in ref
+    lastSentColorRef.current = modeColor;
 
     const detectedColor = getClosestColorName(lastSentColorRef.current);
     const teamId = getTeamId(detectedColor);
 
-    // Check if team has space
     if (!canJoinTeam(teamId, typeof gameCode === "string" ? gameCode : "")) {
       alert(`Team ${teamId} (${detectedColor}) is full (4 players). Please wear a shirt with a different color.`);
       return;
     }
 
-    // Ensure all parameters are valid before navigation
-  if (!username.trim() || !gameCode || typeof gameCode !== "string") {
-    alert("Please provide a valid username and game code.");
-    return;
-  }
+    if (!username.trim() || !gameCode || typeof gameCode !== "string") {
+      alert("Please provide a valid username and game code.");
+      return;
+    }
 
     router.push({
       pathname: "/TeamLobby",
@@ -309,35 +311,33 @@ export default function TeamCalibration() {
         flexDirection: "column",
         alignItems: "center",
         backgroundColor: "#1a1a1a",
-        height: "100%", // Ensure full height
+        height: "100%",
       }}
     >
-      {/* Banner Section */}
       <div
         style={{
           width: "100%",
-          minHeight: "60px", // Reduced minimum height for mobile
-          height: "10%", // Adjusted for better mobile fit
-          backgroundColor: "#800080", // Purple background
+          minHeight: "60px",
+          height: "10%",
+          backgroundColor: "#800080",
           display: "flex",
           justifyContent: "center",
           alignItems: "center",
-          marginBottom: "0", // Remove margin to avoid gaps
+          marginBottom: "0",
         }}
       >
         <img
           src="/images/Laser-Tag.png"
           alt="Laser Tag Logo"
           style={{
-            maxHeight: "80px", // Reduced for mobile
+            maxHeight: "80px",
             width: "auto",
-            maxWidth: "30vw", // Smaller max width for mobile
+            maxWidth: "30vw",
             objectFit: "contain",
           }}
         />
       </div>
 
-      {/* Centered Camera View with Background */}
       <div
         style={{
           display: "flex",
@@ -346,10 +346,10 @@ export default function TeamCalibration() {
           flexGrow: 1,
           justifyContent: "center",
           width: "100%",
-          padding: "0 10px", // Small padding for mobile
-          backgroundColor: "rgba(0, 0, 0, 0.5)", // Semi-transparent black background
-          maxWidth: "90%", // Limit width on mobile
-          margin: "0 auto", // Center the container
+          padding: "0 10px",
+          backgroundColor: "rgba(0, 0, 0, 0.5)",
+          maxWidth: "90%",
+          margin: "0 auto",
         }}
       >
         <video
@@ -361,21 +361,20 @@ export default function TeamCalibration() {
         ></video>
         <canvas
           ref={canvasRef}
-          style={{ maxWidth: "100%", height: "auto" }} // Ensure canvas scales
+          style={{ maxWidth: "100%", height: "auto" }}
         ></canvas>
       </div>
 
-      {/* Input and Button Section */}
       <div
         style={{
           marginTop: "1rem",
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
-          padding: "0 10px", // Add padding for mobile
+          padding: "0 10px",
           width: "100%",
-          maxWidth: "300px", // Limit width for better mobile layout
-          margin: "0 auto", // Center the section
+          maxWidth: "300px",
+          margin: "0 auto",
         }}
       >
         <input
@@ -414,7 +413,7 @@ export default function TeamCalibration() {
             opacity: !username.trim() ? 0.6 : 1,
           }}
         >
-          📸 Capture Pose
+          Capture Pose
         </button>
       </div>
     </div>

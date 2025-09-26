@@ -135,7 +135,7 @@ export default function LandingPage() {
     
     try {
       router.push({
-        pathname: "/spectator_stream",
+        pathname: "/SpectatorStreaming",
         query: { gameCode, soundEnabled: isSoundEnabled.toString() },
       });
     } catch (error) {

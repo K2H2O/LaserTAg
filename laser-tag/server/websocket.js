@@ -1,609 +1,425 @@
-const WebSocket = require("ws");
-const { parse } = require("url");
-const { randomUUID } = require("crypto");
-const appData = require("./app-data");
-const fs = require('fs').promises;
-const path = require('path');
+const WebSocket = require('ws');
+const express = require('express');
+const http = require('http');
+const url = require('url');
 
-// Sound preferences storage
-let soundPreferences = new Map();
-const SOUND_PREFERENCES_FILE = path.join(__dirname, 'sound_preferences.json');
+const app = express();
+const server = http.createServer(app);
 
-// Load sound preferences from file on server start
-async function loadSoundPreferences() {
-    try {
-        const data = await fs.readFile(SOUND_PREFERENCES_FILE, 'utf8');
-        const preferences = JSON.parse(data);
-        soundPreferences = new Map(Object.entries(preferences));
-        console.log('Sound preferences loaded from file');
-    } catch (error) {
-        console.log('No existing sound preferences file found, starting fresh');
-    }
-}
+// Game sessions storage
+const gameSessions = new Map();
 
-// Save sound preferences to file
-async function saveSoundPreferences() {
-    try {
-        const preferences = Object.fromEntries(soundPreferences);
-        await fs.writeFile(SOUND_PREFERENCES_FILE, JSON.stringify(preferences, null, 2));
-        console.log('Sound preferences saved to file');
-    } catch (error) {
-        console.error('Error saving sound preferences:', error);
-    }
-}
+class GameSession {
+  constructor(gameCode) {
+    this.gameCode = gameCode;
+    this.players = new Map(); // username -> playerData
+    this.teams = new Map();   // teamId -> team data
+    this.admin = null;
+    this.state = 'lobby'; // 'lobby', 'game', 'finished'
+    this.timeLeft = 180; // 3 minutes
+    this.gameTimer = null;
+    this.createdAt = Date.now();
+  }
 
-// Get player's sound preference
-function getPlayerSoundPreference(username) {
-    const preference = soundPreferences.get(username);
-    return preference ? preference.soundEnabled : false;
-}
-
-// Set player's sound preference
-async function setPlayerSoundPreference(username, soundEnabled) {
-    soundPreferences.set(username, {
-        soundEnabled: soundEnabled,
-        lastUpdated: new Date().toISOString(),
-        username: username
-    });
+  addPlayer(ws, playerData) {
+    const { username, color, teamId } = playerData;
     
-    await saveSoundPreferences();
-    console.log(`Sound preference updated for ${username}: ${soundEnabled}`);
-}
-
-function sendToClients(session, message, sendToPlayers, sendToSpectators) {
-    if (sendToPlayers) {
-        for (let username in session.players) {
-            const player = session.players[username];
-            if (player.connection.readyState === WebSocket.OPEN) {
-                player.connection.send(message);
-            }
-        }
+    // Set first player as admin
+    if (!this.admin && this.players.size === 0) {
+      this.admin = username;
+      console.log(`👑 ${username} is now admin of ${this.gameCode}`);
     }
-    if (sendToSpectators) {
-        for (let id in session.spectators) {
-            if (session.spectators[id].readyState === WebSocket.OPEN) {
-                session.spectators[id].send(message);
-            }
-        }
-    }
-}
 
-function getPlayerList(session) {
-    return Object.keys(session.players).map((username) => {
-        const { color, hitsGiven, hitsTaken, points, health, teamId } = session.players[username];
-        return {
-            username,
-            color,
-            hitsGiven,
-            hitsTaken,
-            points,
-            health,
-            teamId: session.mode === "team" ? teamId : undefined
-        };
+    // Add player to players map
+    this.players.set(username, {
+      ...playerData,
+      ws: ws,
+      points: 100,
+      hitsGiven: 0,
+      hitsTaken: 0,
+      health: 100,
+      connected: true,
+      joinedAt: Date.now()
     });
-}
 
-function getTeams(session) {
-    if (session.mode !== "team") return [];
+    // Add player to team
+    if (!this.teams.has(teamId)) {
+      this.teams.set(teamId, {
+        teamId: teamId,
+        players: [],
+        score: 0
+      });
+    }
+
+    const team = this.teams.get(teamId);
+    const existingPlayer = team.players.find(p => p.username === username);
     
-    return Object.entries(session.teams || {}).map(([teamId, usernames]) => ({
-        teamId,
-        players: usernames.map((u) => {
-            const p = session.players[u];
-            if (!p) return null;
-            return { 
-                username: p.username, 
-                color: p.color, 
-                health: p.health, 
-                points: p.points 
-            };
-        }).filter(p => p !== null),
+    if (!existingPlayer) {
+      team.players.push({
+        username: username,
+        color: color,
+        points: 100,
+        hitsGiven: 0,
+        hitsTaken: 0,
+        health: 100
+      });
+    }
+
+    // Update team score
+    team.score = team.players.reduce((sum, p) => sum + p.points, 0);
+
+    console.log(`✅ ${username} joined ${this.gameCode} as Team ${teamId} (${color})`);
+    this.broadcastTeamUpdate();
+    return true;
+  }
+
+  removePlayer(username) {
+    const player = this.players.get(username);
+    if (!player) return;
+
+    // Remove from team
+    const team = this.teams.get(player.teamId);
+    if (team) {
+      team.players = team.players.filter(p => p.username !== username);
+      if (team.players.length === 0) {
+        this.teams.delete(player.teamId);
+      } else {
+        team.score = team.players.reduce((sum, p) => sum + p.points, 0);
+      }
+    }
+
+    // Remove from players
+    this.players.delete(username);
+
+    // Transfer admin if needed
+    if (this.admin === username && this.players.size > 0) {
+      this.admin = Array.from(this.players.keys())[0];
+      console.log(`👑 Admin transferred to ${this.admin} in ${this.gameCode}`);
+    }
+
+    console.log(`❌ ${username} left ${this.gameCode}`);
+    this.broadcastTeamUpdate();
+  }
+
+  broadcastTeamUpdate() {
+    const teamsArray = Array.from(this.teams.values());
+    const playersArray = Array.from(this.players.values()).map(p => ({
+      username: p.username,
+      color: p.color,
+      points: p.points,
+      hitsGiven: p.hitsGiven,
+      hitsTaken: p.hitsTaken,
+      health: p.health
     }));
-}
 
-function broadcastPlayerPositions(session) {
-    const positions = Object.values(session.players)
-        .filter(player => player.position.latitude !== null && player.position.longitude !== null)
-        .map(player => ({
-            username: player.username,
-            color: player.color,
-            teamId: session.mode === "team" ? player.teamId : null,
-            latitude: player.position.latitude,
-            longitude: player.position.longitude,
-            lastUpdated: player.position.lastUpdated
-        }));
-
-    const message = JSON.stringify({
-        type: "playerPositions",
-        positions: positions
-    });
-
-    sendToClients(session, message, true, true);
-}
-
-function broadcastPlayerList(session) {
-    const isTeamMode = session.mode === "team";
-    const messageData = {
-        type: "playerListUpdate",
-        admin: session.admin,
+    const updateMessage = {
+      type: 'gameUpdate',
+      teams: teamsArray,
+      players: playersArray,
+      admin: this.admin,
+      state: this.state,
+      timeLeft: this.timeLeft,
+      gameStarted: this.state === 'game'
     };
+
+    this.broadcast(updateMessage);
+    console.log(`📡 Broadcasting to ${this.players.size} players in ${this.gameCode}:`, {
+      teams: teamsArray.length,
+      admin: this.admin,
+      state: this.state
+    });
+  }
+
+  broadcast(message, excludeUsername = null) {
+    const messageStr = JSON.stringify(message);
     
-    if (isTeamMode) {
-        messageData.teams = getTeams(session);
-    } else {
-        messageData.playerList = getPlayerList(session);
+    for (const [username, player] of this.players) {
+      if (excludeUsername && username === excludeUsername) continue;
+      
+      if (player.ws && player.ws.readyState === WebSocket.OPEN) {
+        try {
+          player.ws.send(messageStr);
+        } catch (error) {
+          console.error(`Failed to send to ${username}:`, error.message);
+          this.removePlayer(username);
+        }
+      }
     }
+  }
+
+  startGame() {
+    if (this.state !== 'lobby') {
+      console.log(`⚠️ Cannot start game ${this.gameCode} - already in state: ${this.state}`);
+      return false;
+    }
+
+    if (this.teams.size === 0) {
+      console.log(`⚠️ Cannot start game ${this.gameCode} - no teams`);
+      return false;
+    }
+
+    this.state = 'game';
+    this.timeLeft = 180;
     
-    sendToClients(session, JSON.stringify(messageData), true, true);
-}
-
-function handleHit(session, player, color, weapon) {
-    if (color === 'cyan' || color === 'aqua') return; // invalid colors
-    if (player.points <= 0 || player.health <= 10) return; // shooter eliminated
-
-    // Find target player by color
-    let target = null;
-    for (let playerUsername in session.players) {
-        if (session.players[playerUsername].color === color) {
-            target = session.players[playerUsername];
-            break;
-        }
-    }
-
-    if (!target || target.points <= 0 || target.health <= 10 || target.activePowerups.invincibility > 0) {
-        return;
-    }
-
-    // Team mode: prevent friendly fire
-    if (session.mode === "team" && player.teamId === target.teamId) {
-        return;
-    }
-
-    // Update health
-    target.health = Math.max(0, target.health - 10);
-    player.health = Math.min(100, player.health + 5); // smaller heal for balance
-
-    // Update points
-    if (player.activePowerups.instakill > 0) {
-        let currentPoints = target.points;
-        target.points = 0;
-        player.points += Math.floor(currentPoints / 2);
-    } else {
-        const weaponDamages = {
-            pistol: 6,
-            sniper: 32,
-            shotgun: 12,
-        };
-        const damage = weaponDamages[weapon] ?? 6;
-        target.points = Math.max(0, target.points - damage);
-        player.points += Math.floor(damage / 2);
-    }
-
-    // Update hit counters
-    player.hitsGiven++;
-    target.hitsTaken++;
-
-    // Send hit notification
-    sendToClients(
-        session,
-        JSON.stringify({
-            type: "hit",
-            player: player.username,
-            target: target.username,
-            weapon,
-            targetHealth: target.health,
-            targetPoints: target.points,
-            shooterHealth: player.health,
-            shooterPoints: player.points
-        }),
-        true,
-        true
-    );
-
-    // Check for elimination
-    let eliminationCause = null;
-    if (target.health <= 10 && target.points <= 0) {
-        eliminationCause = "health_and_points_depleted";
-    } else if (target.health <= 10) {
-        eliminationCause = "health_depleted";
-    } else if (target.points <= 0) {
-        eliminationCause = "points_depleted";
-    }
-
-    if (eliminationCause) {
-        sendToClients(
-            session,
-            JSON.stringify({
-                type: "elimination",
-                player: target.username,
-                weapon,
-                cause: eliminationCause
-            }),
-            true,
-            true
-        );
-    }
-}
-
-function attach(server) {
-    const wss = new WebSocket.Server({ server });
-
-    // Load sound preferences on startup
-    loadSoundPreferences();
-
-    // Game timer and session management
-    setInterval(() => {
-        for (let session of Object.values(appData.sessions)) {
-            // Session persistence logic
-            if (Object.keys(session.players).length === 0 && Object.keys(session.spectators).length === 0) {
-                session.persistTime = (session.persistTime || appData.SESSION_PERSIST_TIME || 300) - 1;
-
-                if (session.persistTime <= 0) {
-                    delete appData.sessions[session.id];
-                    console.log(`Session ${session.id} closed due to inactivity`);
-                    continue;
-                }
-            } else {
-                session.persistTime = appData.SESSION_PERSIST_TIME || 300;
-            }
-
-            if (session.state === "game") {
-                session.timeLeft -= 1;
-                const now = Date.now();
-                const staleThreshold = 2 * 60 * 1000; // 2 minutes
-
-                // Update player states and clean stale positions
-                for (let player of Object.values(session.players)) {
-                    // Set points to 0 for low health players
-                    if (player.health <= 10 && player.points > 0) {
-                        player.points = 0;
-                    }
-
-                    // Clean stale positions
-                    if (player.position.lastUpdated && 
-                        now - player.position.lastUpdated > staleThreshold) {
-                        console.log(`Cleaning stale position for ${player.username}`);
-                        player.position.latitude = null;
-                        player.position.longitude = null;
-                        player.position.lastUpdated = null;
-                    }
-
-                    // Handle powerups
-                    for (let powerupId in player.activePowerups) {
-                        if (player.activePowerups[powerupId] > 0) {
-                            player.activePowerups[powerupId]--;
-                        }
-                    }
-
-                    // Give new powerups (6% chance per second)
-                    if (Math.random() < 0.06) {
-                        const powerups = ['invincibility', 'instakill', 'healthBoost'];
-                        const selectedPowerup = powerups[Math.floor(Math.random() * powerups.length)];
-                        const powerupDuration = 10;
-
-                        if (selectedPowerup === 'healthBoost') {
-                            player.health = Math.min(100, player.health + 30);
-                        } else {
-                            player.activePowerups[selectedPowerup] = powerupDuration;
-                        }
-
-                        if (player.connection.readyState === WebSocket.OPEN) {
-                            player.connection.send(JSON.stringify({
-                                type: 'powerup',
-                                powerup: selectedPowerup,
-                                duration: powerupDuration
-                            }));
-                        }
-                    }
-                }
-
-                // Send game update
-                sendToClients(
-                    session,
-                    JSON.stringify({
-                        type: "gameUpdate",
-                        timeLeft: session.timeLeft,
-                        players: getPlayerList(session),
-                    }),
-                    true,
-                    true
-                );
-
-                // End game if time is up
-                if (session.timeLeft <= 0) {
-                    session.state = "finished";
-                    sendToClients(
-                        session,
-                        JSON.stringify({
-                            type: "gameEnd",
-                            finalScores: getPlayerList(session)
-                        }),
-                        true,
-                        true
-                    );
-                }
-            }
-        }
+    console.log(`🎮 Starting game ${this.gameCode} with ${this.teams.size} teams`);
+    
+    // Start game timer
+    this.gameTimer = setInterval(() => {
+      this.timeLeft--;
+      
+      if (this.timeLeft <= 0) {
+        this.endGame();
+      } else {
+        this.broadcastTeamUpdate();
+      }
     }, 1000);
 
-    wss.on("connection", (ws, req) => {
-        const { pathname, query } = parse(req.url, true);
-        const parts = pathname.split("/").filter(Boolean);
+    this.broadcastTeamUpdate();
+    return true;
+  }
 
-        if (parts.length < 2) {
-            ws.close(1000, "Invalid WebSocket path");
-            return;
-        }
+  endGame() {
+    this.state = 'finished';
+    if (this.gameTimer) {
+      clearInterval(this.gameTimer);
+      this.gameTimer = null;
+    }
 
-        const [mode, sessionId] = parts;
-        const isTeamMode = mode === "team-session";
-        const isSoloMode = mode === "session";
+    console.log(`🏁 Game ${this.gameCode} ended`);
+    this.broadcastTeamUpdate();
+  }
 
-        if (!isTeamMode && !isSoloMode) {
-            ws.close(1000, "Unknown session type");
-            return;
-        }
+  handleHit(fromUsername, hitData) {
+    const { weapon, color: targetColor, teamId: attackerTeamId } = hitData;
+    
+    // Find target player by color
+    let targetPlayer = null;
+    let targetTeam = null;
+    
+    for (const [teamId, team] of this.teams) {
+      const player = team.players.find(p => p.color === targetColor);
+      if (player) {
+        targetPlayer = player;
+        targetTeam = team;
+        break;
+      }
+    }
 
-        let session = appData.sessions[sessionId];
-        if (!session) {
-            session = appData.createSession(sessionId, isTeamMode ? "team" : "solo");
-            console.log(`Created ${isTeamMode ? "team" : "solo"} session ${sessionId}`);
-        }
+    if (!targetPlayer || targetPlayer.username === fromUsername) {
+      return; // Invalid target or self-hit
+    }
 
-        const isSpectator = parts.length === 3 && parts[2] === "spectator";
-        const isColorCheck = parts.length === 3 && parts[2] === "check_color";
+    // Prevent team-on-team hits (friendly fire)
+    const attackerPlayer = this.players.get(fromUsername);
+    if (attackerPlayer && attackerPlayer.teamId === targetTeam.teamId) {
+      console.log(`🚫 Friendly fire prevented: ${fromUsername} -> ${targetPlayer.username}`);
+      return;
+    }
 
-        // Color check logic
-        if (isColorCheck) {
-            ws.on("message", (msg) => {
-                try {
-                    const { color } = JSON.parse(msg);
-                    const taken = Object.values(session.players).some((p) => p.color === color);
-                    ws.send(JSON.stringify({ type: "colorResult", available: !taken }));
-                } catch (error) {
-                    console.error("Error in color check:", error);
-                }
-            });
-            return;
-        }
+    // Apply hit effects
+    const damage = weapon === 'sniper' ? 20 : weapon === 'shotgun' ? 15 : 10;
+    
+    targetPlayer.health = Math.max(10, targetPlayer.health - damage);
+    targetPlayer.hitsTaken++;
+    targetPlayer.points = Math.max(0, targetPlayer.points - 10);
 
-        // Spectator logic
-        if (isSpectator) {
-            const id = randomUUID();
-            session.spectators[id] = ws;
-            console.log(`Spectator connected to ${sessionId}`);
+    if (attackerPlayer) {
+      const attackerTeamData = this.teams.get(attackerPlayer.teamId);
+      const attackerInTeam = attackerTeamData?.players.find(p => p.username === fromUsername);
+      
+      if (attackerInTeam) {
+        attackerInTeam.hitsGiven++;
+        attackerInTeam.points += 20;
+        attackerInTeam.health = Math.min(100, attackerInTeam.health + 5);
+      }
+    }
 
-            ws.on("close", () => {
-                delete session.spectators[id];
-                console.log(`Spectator disconnected from ${sessionId}`);
-            });
-            return;
-        }
+    // Update team scores
+    for (const team of this.teams.values()) {
+      team.score = team.players.reduce((sum, p) => sum + p.points, 0);
+    }
 
-        // PLAYER JOIN LOGIC
-        let { username, color, team: teamId } = query;
-
-        if (!username || !color || (isTeamMode && !teamId)) {
-            ws.close(1000, "Missing player parameters");
-            return;
-        }
-
-        // Ensure unique username
-        let uniqueUsername = username;
-        while (session.players[uniqueUsername]) {
-            uniqueUsername += Math.floor(Math.random() * 10);
-        }
-
-        // Create player object
-        session.players[uniqueUsername] = {
-            connection: ws,
-            username: uniqueUsername,
-            color,
-            teamId: isTeamMode ? teamId : null,
-            hitsGiven: 0,
-            hitsTaken: 0,
-            points: 50,
-            health: 100,
-            activePowerups: {},
-            position: {
-                latitude: null,
-                longitude: null,
-                lastUpdated: null
-            }
-        };
-
-        // Register player to team
-        if (isTeamMode) {
-            if (!session.teams) session.teams = {};
-            if (!session.teams[teamId]) session.teams[teamId] = [];
-            session.teams[teamId].push(uniqueUsername);
-        }
-
-        // Set admin if needed
-        if (!session.admin) {
-            session.admin = uniqueUsername;
-            console.log(`Player ${uniqueUsername} made admin for session ${sessionId}`);
-        }
-
-        console.log(`Player ${uniqueUsername} joined ${isTeamMode ? 'team' : 'solo'} session ${sessionId}`);
-
-        // Send sound preference
-        const currentSoundPreference = getPlayerSoundPreference(uniqueUsername);
-        ws.send(JSON.stringify({
-            type: "soundPreference",
-            soundEnabled: currentSoundPreference
-        }));
-
-        // Send initial updates
-        sendToClients(
-            session,
-            JSON.stringify({
-                type: "playerJoin",
-                username: uniqueUsername,
-            }),
-            true,
-            true
-        );
-        broadcastPlayerList(session);
-
-        // Handle incoming messages
-        ws.on("message", async (raw) => {
-            let message;
-            try {
-                message = JSON.parse(raw);
-            } catch (error) {
-                console.error(`Error parsing message from ${uniqueUsername}:`, error);
-                return;
-            }
-
-            const { type } = message;
-            console.log(`Received ${type} from ${uniqueUsername}`);
-
-            switch (type) {
-                case "startGame":
-                    if (uniqueUsername === session.admin) {
-                        session.state = "game";
-                        session.timeLeft = 180; // 3 minutes
-                        sendToClients(
-                            session,
-                            JSON.stringify({
-                                type: "startGame",
-                                playerList: getPlayerList(session),
-                                teams: isTeamMode ? getTeams(session) : undefined
-                            }),
-                            true,
-                            true
-                        );
-                    }
-                    break;
-
-                case "hit":
-                    const { color: hitColor, weapon } = message;
-                    handleHit(session, session.players[uniqueUsername], hitColor, weapon);
-                    break;
-
-                case "cameraFrame":
-                    const { frame, health } = message;
-                    if (!session.latestFrames) session.latestFrames = {};
-                    session.latestFrames[uniqueUsername] = frame;
-
-                    // Update health from client
-                    if (health !== undefined && session.players[uniqueUsername]) {
-                        session.players[uniqueUsername].health = health;
-                    }
-
-                    // Send frames to spectators
-                    const spectatorMessage = JSON.stringify({
-                        type: "cameraFramesBatch",
-                        frames: Object.entries(session.latestFrames).map(([user, frame]) => ({
-                            username: user,
-                            frame,
-                            health: session.players[user]?.health || 100
-                        })),
-                    });
-                    sendToClients(session, spectatorMessage, false, true);
-                    break;
-
-                case "forfeit":
-                    console.log(`Player ${uniqueUsername} forfeited`);
-                    if (session.players[uniqueUsername]) {
-                        session.players[uniqueUsername].health = 0;
-                        session.players[uniqueUsername].points = 0;
-                    }
-                    sendToClients(
-                        session,
-                        JSON.stringify({
-                            type: "playerForfeited",
-                            forfeitedPlayer: uniqueUsername,
-                            message: `${uniqueUsername} has forfeited the game.`
-                        }),
-                        true,
-                        true
-                    );
-                    broadcastPlayerList(session);
-                    break;
-
-                case "playerPosition":
-                    const { latitude, longitude, timestamp } = message;
-                    if (typeof latitude === 'number' && typeof longitude === 'number' &&
-                        latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180) {
-                        
-                        if (session.players[uniqueUsername]) {
-                            session.players[uniqueUsername].position = {
-                                latitude: latitude,
-                                longitude: longitude,
-                                lastUpdated: timestamp || Date.now()
-                            };
-                            // Real-time position broadcast
-                            broadcastPlayerPositions(session);
-                        }
-                    }
-                    break;
-
-                case "soundPreference":
-                    const { soundEnabled } = message;
-                    if (typeof soundEnabled === 'boolean') {
-                        try {
-                            await setPlayerSoundPreference(uniqueUsername, soundEnabled);
-                            ws.send(JSON.stringify({
-                                type: "soundPreferenceUpdated",
-                                soundEnabled: soundEnabled,
-                                success: true
-                            }));
-                        } catch (error) {
-                            console.error(`Error saving sound preference for ${uniqueUsername}:`, error);
-                            ws.send(JSON.stringify({
-                                type: "soundPreferenceUpdated",
-                                soundEnabled: soundEnabled,
-                                success: false,
-                                error: "Failed to save preference"
-                            }));
-                        }
-                    }
-                    break;
-
-                case "getSoundPreference":
-                    const currentPreference = getPlayerSoundPreference(uniqueUsername);
-                    ws.send(JSON.stringify({
-                        type: "soundPreference",
-                        soundEnabled: currentPreference
-                    }));
-                    break;
-            }
-        });
-
-        ws.on("close", () => {
-            console.log(`Player ${uniqueUsername} disconnected from ${sessionId}`);
-            
-            // Remove from session
-            delete session.players[uniqueUsername];
-
-            // Remove from team
-            if (isTeamMode && session.teams && session.teams[teamId]) {
-                session.teams[teamId] = session.teams[teamId].filter(u => u !== uniqueUsername);
-                if (session.teams[teamId].length === 0) {
-                    delete session.teams[teamId];
-                }
-            }
-
-            // Update admin
-            if (session.admin === uniqueUsername) {
-                session.admin = Object.keys(session.players)[0] || null;
-            }
-
-            // Notify others
-            sendToClients(
-                session,
-                JSON.stringify({
-                    type: "playerQuit",
-                    username: uniqueUsername,
-                }),
-                true,
-                true
-            );
-            broadcastPlayerList(session);
-        });
+    // Broadcast hit event
+    this.broadcast({
+      type: 'hit',
+      player: fromUsername,
+      target: targetPlayer.username,
+      weapon: weapon,
+      damage: damage
     });
+
+    console.log(`🎯 ${fromUsername} hit ${targetPlayer.username} with ${weapon} (-${damage} health)`);
+    
+    // Broadcast updated game state
+    this.broadcastTeamUpdate();
+  }
 }
 
-module.exports = { attach, loadSoundPreferences };
+// WebSocket Server
+const wss = new WebSocket.Server({
+  server,
+  path: '/session',
+  verifyClient: (info) => {
+    const query = url.parse(info.req.url, true).query;
+    return query.username && query.color && query.teamId;
+  }
+});
+
+wss.on('connection', (ws, req) => {
+  const query = url.parse(req.url, true).query;
+  const pathSegments = req.url.split('/');
+  const gameCode = pathSegments[2]?.split('?')[0]; // Extract gameCode from path
+
+  if (!gameCode || !query.username || !query.color || !query.teamId) {
+    console.log('❌ Invalid connection attempt');
+    ws.close(1008, 'Missing required parameters');
+    return;
+  }
+
+  const playerData = {
+    username: query.username,
+    color: query.color,
+    teamId: parseInt(query.teamId),
+    gameCode: gameCode
+  };
+
+  console.log(`🔗 New connection: ${playerData.username} -> ${gameCode}`);
+
+  // Get or create game session
+  let session = gameSessions.get(gameCode);
+  if (!session) {
+    session = new GameSession(gameCode);
+    gameSessions.set(gameCode, session);
+    console.log(`🆕 Created new session: ${gameCode}`);
+  }
+
+  // Add player to session
+  const added = session.addPlayer(ws, playerData);
+  if (!added) {
+    ws.close(1008, 'Failed to join session');
+    return;
+  }
+
+  // Handle WebSocket messages
+  ws.on('message', (rawMessage) => {
+    try {
+      const message = JSON.parse(rawMessage);
+      console.log(`📨 ${playerData.username} sent:`, message.type);
+
+      switch (message.type) {
+        case 'startGame':
+          if (session.admin === playerData.username) {
+            const started = session.startGame();
+            if (started) {
+              console.log(`🎮 ${playerData.username} started game ${gameCode}`);
+            }
+          } else {
+            console.log(`⚠️ ${playerData.username} tried to start game but is not admin`);
+          }
+          break;
+
+        case 'hit':
+          session.handleHit(playerData.username, message);
+          break;
+
+        case 'forfeit':
+          session.removePlayer(playerData.username);
+          ws.close(1000, 'Player forfeited');
+          break;
+
+        case 'requestTeamList':
+          session.broadcastTeamUpdate();
+          break;
+
+        case 'joinTeam':
+          // Re-add player (handle reconnection)
+          session.addPlayer(ws, playerData);
+          break;
+
+        case 'playerPosition':
+          // Broadcast position to other players
+          session.broadcast({
+            type: 'playerPositions',
+            positions: [{
+              username: playerData.username,
+              latitude: message.latitude,
+              longitude: message.longitude,
+              color: playerData.color,
+              timestamp: message.timestamp
+            }]
+          }, playerData.username);
+          break;
+
+        case 'cameraFrame':
+          // Handle camera frame if needed
+          break;
+
+        default:
+          console.log(`❓ Unknown message type: ${message.type}`);
+      }
+    } catch (error) {
+      console.error(`❌ Error processing message from ${playerData.username}:`, error.message);
+    }
+  });
+
+  // Handle disconnection
+  ws.on('close', (code, reason) => {
+    console.log(`🔌 ${playerData.username} disconnected from ${gameCode}: ${code} - ${reason}`);
+    session.removePlayer(playerData.username);
+    
+    // Clean up empty sessions
+    if (session.players.size === 0) {
+      if (session.gameTimer) {
+        clearInterval(session.gameTimer);
+      }
+      gameSessions.delete(gameCode);
+      console.log(`🗑️ Removed empty session: ${gameCode}`);
+    }
+  });
+
+  ws.on('error', (error) => {
+    console.error(`❌ WebSocket error for ${playerData.username}:`, error.message);
+  });
+});
+
+// Clean up old sessions periodically
+setInterval(() => {
+  const now = Date.now();
+  const maxAge = 4 * 60 * 60 * 1000; // 4 hours
+  
+  for (const [gameCode, session] of gameSessions) {
+    if (now - session.createdAt > maxAge && session.players.size === 0) {
+      if (session.gameTimer) {
+        clearInterval(session.gameTimer);
+      }
+      gameSessions.delete(gameCode);
+      console.log(`🧹 Cleaned up old session: ${gameCode}`);
+    }
+  }
+}, 30 * 60 * 1000); // Every 30 minutes
+
+// Basic HTTP endpoints
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    sessions: gameSessions.size,
+    totalPlayers: Array.from(gameSessions.values()).reduce((sum, s) => sum + s.players.size, 0)
+  });
+});
+
+app.get('/sessions', (req, res) => {
+  const sessions = Array.from(gameSessions.entries()).map(([code, session]) => ({
+    gameCode: code,
+    players: session.players.size,
+    teams: session.teams.size,
+    state: session.state,
+    admin: session.admin
+  }));
+  res.json(sessions);
+});
+
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, () => {
+  console.log(`🚀 Laser Tag WebSocket Server running on port ${PORT}`);
+  console.log(`📡 WebSocket endpoint: ws://localhost:${PORT}/session/{gameCode}?username=X&color=Y&teamId=Z`);
+});
