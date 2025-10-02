@@ -8,6 +8,9 @@ import * as poseDetection from "@tensorflow-models/pose-detection";
 import { Keypoint } from "@tensorflow-models/pose-detection";
 import "@tensorflow/tfjs-backend-webgl";
 
+// Add AudioKey type definition
+type AudioKey = "pistol" | "shotgun" | "sniper" | "ouch" | "powerup";
+
 interface Player {
   username: string;
   color: string;
@@ -38,6 +41,10 @@ export default function TeamCameraView() {
   const canvasRef = useRef<CanvasWithHitData>(null);
   const logRef = useRef(null);
   const detectorRef = useRef<poseDetection.PoseDetector | null>(null);
+  const socketRef = useRef<Socket | null>(null);
+  const audioRef = useRef<Record<AudioKey, HTMLAudioElement> | null>(null);
+  const isGameRunning = useRef(true);
+  const isRedirecting = useRef(false);
   const [gunType, setGunType] = useState<"pistol" | "shotgun" | "sniper">("pistol");
   const [zoomEnabled, setZoomEnabled] = useState(false);
   const [activePowerup, setActivePowerup] = useState<PowerupData | null>(null);
@@ -75,43 +82,9 @@ export default function TeamCameraView() {
   const highestHitsGiven = allPlayers.reduce((max, p) => 
     p.hitsGiven > (max?.hitsGiven || 0) ? p : max, null as Player | null);
 
-  // Socket.IO and game state refs
-  type AudioKey = "pistol" | "shotgun" | "sniper" | "ouch" | "powerup";
-  const socketRef = useRef<Socket | null>(null);
-  const audioRef = useRef<Record<AudioKey, HTMLAudioElement> | null>(null);
-  const isGameRunning = useRef(true);
-  const isRedirecting = useRef(false);
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const audioFiles = {
-        pistol: "/audio/pistol.mp3",
-        shotgun: "/audio/shotgun.mp3",
-        sniper: "/audio/sniper.mp3",
-        ouch: "/audio/ouch.mp3",
-        powerup: "/audio/powerup.mp3",
-      };
-
-      audioRef.current = {} as Record<AudioKey, HTMLAudioElement>;
-      Object.entries(audioFiles).forEach(([key, src]) => {
-        try {
-          const audio = new Audio(src);
-          audio.preload = "auto";
-          audioRef.current![key as AudioKey] = audio;
-          audio.onerror = () => console.error(`Failed to load audio: ${src}`);
-        } catch (error) {
-          console.error(`Error initializing audio for ${key}:`, error);
-        }
-      });
-    }
-  }, []);
-
   // Initialize Socket.IO connection & listen for game updates
   // Socket.IO connection and game state management
   useEffect(() => {
-    const isGameRunning = useRef(true);
-    const isRedirecting = useRef(false);
-
     // Only setup socket if all parameters are available
     if (!router.isReady) return;
 
@@ -177,17 +150,7 @@ export default function TeamCameraView() {
 
     // Cleanup function
     return () => {
-      console.log("Cleaning up socket connection");
       isGameRunning.current = false;
-      
-      // Remove event listeners
-      socket.off("connect", onConnect);
-      socket.off("powerupCollected", onPowerupCollected);
-      socket.off("gameEnd", onGameEnd);
-      socket.off("disconnect", onDisconnect);
-      socket.off("connect_error", onConnectError);
-
-      // Disconnect socket
       if (socketRef.current) {
         socketRef.current.disconnect();
         socketRef.current = null;
@@ -256,6 +219,7 @@ export default function TeamCameraView() {
         }, duration * 1000);
       };
 
+      // Replace the onGameUpdate function in the socket effect
       const onGameUpdate = (data: { teams: Team[], timeLeft: number }) => {
         if (!isGameRunning.current || isRedirecting.current) return;
 
@@ -278,18 +242,28 @@ export default function TeamCameraView() {
         setGameTimeString(`${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`);
         
         // Handle game end
-        if (timeLeft <= 0 && !isRedirecting.current) {
-          console.log('🏁 Game ended, redirecting...');
-          isRedirecting.current = true;
-
-          // Navigate to leaderboard
-          const params = new URLSearchParams({
-            username,
-            gameCode,
-            teamId,
-            color
-          });
-          window.location.replace(`/TeamLeaderboard?${params.toString()}`);
+        if (timeLeft <= 0) {
+          console.log('🏁 Game ended, redirecting to leaderboard...');
+          try {
+            // Ensure we have teams data before redirecting
+            if (teamsWithScores.length > 0) {
+              isRedirecting.current = true;
+              const serializedTeams = JSON.stringify(teamsWithScores);
+              console.log('Teams data being sent:', serializedTeams);
+              
+              router.push({
+                pathname: '/TeamLeaderboard',
+                query: {
+                  gameCode: gameCode as string,
+                  teamsData: serializedTeams
+                }
+              });
+            } else {
+              console.error('No teams data available for leaderboard');
+            }
+          } catch (error) {
+            console.error('Error redirecting to leaderboard:', error);
+          }
         }
       };
 
@@ -308,17 +282,16 @@ export default function TeamCameraView() {
         console.log('Cleaning up socket connection');
         isGameRunning.current = false;
 
-        // Remove event listeners
-        socket.off('hit', onHit);
-        socket.off('powerup', onPowerup);
-        socket.off('gameUpdate', onGameUpdate);
-        socket.off('connect');
-        socket.off('disconnect');
-        socket.off('error');
-        socket.off('connect_error');
-
-        // Disconnect socket
+        // Remove event listeners and disconnect socket
         if (socketRef.current) {
+          socket.off('hit', onHit);
+          socket.off('powerup', onPowerup);
+          socket.off('gameUpdate', onGameUpdate);
+          socket.off('connect');
+          socket.off('disconnect');
+          socket.off('error');
+          socket.off('connect_error');
+          
           socketRef.current.disconnect();
           socketRef.current = null;
         }
@@ -683,6 +656,48 @@ export default function TeamCameraView() {
     // Cleanup interval on unmount
     return () => clearInterval(intervalId);
   }, [username, teamId]);
+
+  // Update audio initialization with better error handling
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const audioFiles: Record<AudioKey, string> = {
+        pistol: "/audio/pistol.mp3",
+        shotgun: "/audio/shotgun.mp3",
+        sniper: "/audio/sniper.mp3",
+        ouch: "/audio/ouch.mp3",
+        powerup: "/audio/powerup.mp3",
+      };
+
+      const audioElements: Partial<Record<AudioKey, HTMLAudioElement>> = {};
+      
+      Object.entries(audioFiles).forEach(([key, src]) => {
+        try {
+          const audio = new Audio(src);
+          audio.preload = "auto";
+          audioElements[key as AudioKey] = audio;
+          
+          audio.addEventListener('error', (e) => {
+            console.error(`Failed to load audio ${key}:`, e);
+          });
+          
+        } catch (error) {
+          console.error(`Error initializing audio for ${key}:`, error);
+        }
+      });
+
+      audioRef.current = audioElements as Record<AudioKey, HTMLAudioElement>;
+    }
+
+    return () => {
+      if (audioRef.current) {
+        Object.values(audioRef.current).forEach(audio => {
+          audio.pause();
+          audio.src = '';
+        });
+        audioRef.current = null;
+      }
+    };
+  }, []);
 
   return (
     <div

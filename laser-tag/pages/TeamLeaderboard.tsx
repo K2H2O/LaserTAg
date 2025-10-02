@@ -24,25 +24,32 @@ const TeamLeaderboard = () => {
   //const navigate = useNavigate();
 
   useEffect(() => {
+    if (!router.isReady) return;
+
+    console.log('Received query params:', router.query);
+    const { teamsData } = router.query;
+
     if (typeof teamsData === "string") {
       try {
+        console.log('Parsing teams data:', teamsData);
         const parsedTeams = JSON.parse(teamsData);
-        if (Array.isArray(parsedTeams)) {
+        
+        if (Array.isArray(parsedTeams) && parsedTeams.length > 0) {
           console.log('Successfully parsed teams data:', parsedTeams);
           setTeams(parsedTeams);
         } else {
-          throw new Error("Parsed teams data is not an array");
+          console.warn("Invalid teams data format, using defaults");
+          setDefaultTeams();
         }
       } catch (error) {
         console.error("Error parsing teams data:", error);
-        // Set default teams data
         setDefaultTeams();
       }
     } else {
-      console.log('No teams data provided, using default data');
+      console.log('No teams data provided, using defaults');
       setDefaultTeams();
     }
-  }, [teamsData]);
+  }, [router.isReady, router.query]);
 
   const setDefaultTeams = () => {
     const defaultTeams = [

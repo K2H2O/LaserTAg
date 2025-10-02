@@ -1,6 +1,8 @@
 //core react functionality and Next.js navigation
 import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/router";
+import { Socket } from "socket.io-client";
+import { initializeSocket, closeSocket } from "../client/src/utils/socket";
 
 interface Player {
   username: string;
@@ -31,119 +33,98 @@ export default function SpectatorStreaming() {
   const [currentTeamId, setCurrentTeamId] = useState<number | null>(null);
   const [gameTimeString, setGameTimeString] = useState("00:00");
   const [viewMode, setViewMode] = useState<'all' | 'team'>('all');
+  const [isConnected, setIsConnected] = useState(false);
 
-  // websocket connection
-  const socketRef = useRef<WebSocket | null>(null);
+  // socket.io connection
+  const socketRef = useRef<Socket | null>(null);
 
   // routing 
   const router = useRouter();
   const { gameCode } = router.query;
 
-// websocket setup and message handling
+// socket.io setup and message handling
   useEffect(() => {
-    const socketUrl = `wss://bbd-lasertag.onrender.com/session/${gameCode}/spectator`;
-    console.log("🔌 Connecting to WebSocket at:", socketUrl);
-    const socket = new WebSocket(socketUrl);
+    if (!gameCode || typeof gameCode !== 'string') {
+      console.warn("Invalid game code:", gameCode);
+      return;
+    }
+
+    console.log("🔌 Initializing Socket.IO connection for spectator");
+    const socket = initializeSocket(gameCode, 'spectator', 'none', '0');
     socketRef.current = socket;
 
-    socket.onopen = () => {
+    socket.on('connect', () => {
       console.log("✅ Connected as spectator to session:", gameCode);
-    };
+      setIsConnected(true);
+    });
 
-    socket.onmessage = (event) => {
+    socket.on('disconnect', () => {
+      console.log("🛑 Spectator connection closed");
+      setIsConnected(false);
+    });
+
+    socket.on('cameraFrame', (frame: Frame) => {
       try {
-        const data = JSON.parse(event.data);
-        console.log("📦 Raw WebSocket message received:", data);
-       // Handle incoming camera frames from players
-        if (data.type === "cameraFramesBatch" && Array.isArray(data.frames)) {
-          const frames = data.frames as Frame[];
-          const incomingUsernames: string[] = frames.map((f: Frame) => f.username);
-          const currentUsername = usernames[currentIndex];
-
-          // Update frame map with team information
-          setFrameMap((prev) => {
-            const newMap = new Map();
-            for (const frame of frames) {
-              newMap.set(frame.username, frame.frame);
-            }
-            return newMap;
-          });
-
-          // Update usernames list based on view mode
-          if (viewMode === 'team' && currentTeamId !== null) {
-            const teamUsernames = frames
-              .filter(f => f.teamId === currentTeamId)
-              .map(f => f.username);
-            
-            if (teamUsernames.length > 0) {
-              setUsernames(teamUsernames);
-              if (!teamUsernames.includes(currentUsername)) {
-                setCurrentIndex(0);
-              }
-            }
-          } else {
-            if (
-              incomingUsernames.length !== usernames.length ||
-              !incomingUsernames.every((name, i) => name === usernames[i])
-            ) {
-              console.log("🔄 Updating all usernames:", incomingUsernames);
-              setUsernames(incomingUsernames);
-              if (!incomingUsernames.includes(currentUsername)) {
-                setCurrentIndex(0);
-              }
-            }
-          }
+        if (!frame.username || !frame.frame) {
+          console.warn("Invalid frame data received:", frame);
+          return;
         }
 
-        if (data.type === "gameUpdate") {
-          console.log("🎮 Game update received:", data);
-          
-          // Handle teams data
-          if (Array.isArray(data.teams)) {
-            const teamsWithScores = data.teams.map((team: Team) => ({
-              ...team,
-              score: team.players.reduce((sum: number, p: Player) => sum + p.points, 0)
-            }));
-            setTeams(teamsWithScores);
-          }
+        setFrameMap(prev => {
+          const newMap = new Map(prev);
+          newMap.set(frame.username, frame.frame);
+          return newMap;
+        });
 
-          // Update game time
-          if (typeof data.timeLeft === 'number') {
-            const minutes = Math.floor(data.timeLeft / 60);
-            const seconds = data.timeLeft % 60;
-            setGameTimeString(
-              `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
-            );
-
-            // Handle game end
-            if (data.timeLeft <= 0) {
-              router.push({
-                pathname: "/TeamLeaderboard",
-                query: { 
-                  gameCode,
-                  teamsData: JSON.stringify(teams)
-                },
-              });
-            }
+        setUsernames(prev => {
+          if (!prev.includes(frame.username)) {
+            return [...prev, frame.username];
           }
-        }
+          return prev;
+        });
       } catch (err) {
-        console.error("❌ Failed to parse WebSocket message:", err);
+        console.error("❌ Error processing frame:", err);
       }
-    };
+    });
 
-    socket.onerror = (err) => {
-      console.error("❌ WebSocket error:", err);
-    };
+    socket.on('gameUpdate', (data: any) => {
+      console.log("🎮 Game update received:", data);
+      
+      if (Array.isArray(data.teams)) {
+        const teamsWithScores = data.teams.map((team: Team) => ({
+          ...team,
+          score: team.players.reduce((sum: number, p: Player) => sum + p.points, 0)
+        }));
+        setTeams(teamsWithScores);
+      }
 
-    socket.onclose = () => {
-      console.log("🛑 Spectator WebSocket closed.");
-    };
+      if (typeof data.timeLeft === 'number') {
+        const minutes = Math.floor(data.timeLeft / 60);
+        const seconds = data.timeLeft % 60;
+        setGameTimeString(
+          `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+        );
+
+        if (data.timeLeft <= 0) {
+          router.push({
+            pathname: "/TeamLeaderboard",
+            query: { 
+              gameCode,
+              teamsData: JSON.stringify(teams)
+            },
+          });
+        }
+      }
+    });
 
     return () => {
-      socket.close();
+      console.log("Cleaning up socket connection");
+      if (socketRef.current) {
+        closeSocket();
+        socketRef.current = null;
+      }
     };
-  }, [gameCode, usernames, currentIndex]);
+  }, [gameCode]);
 
   // go to next or previous player stream
   const goToNext = () => {
@@ -198,6 +179,19 @@ export default function SpectatorStreaming() {
         boxSizing: "border-box",
       }}
     >
+      {/* Connection Status */}
+      <div style={{
+        position: 'absolute',
+        top: '10px',
+        right: '10px',
+        padding: '8px 12px',
+        borderRadius: '4px',
+        backgroundColor: isConnected ? 'rgba(0, 255, 0, 0.2)' : 'rgba(255, 0, 0, 0.2)',
+        color: isConnected ? '#00ff00' : '#ff0000'
+      }}>
+        {isConnected ? '🟢 Connected' : '🔴 Disconnected'}
+      </div>
+
       {/* Header Section */}
       <div style={{ width: "100%", marginBottom: "20px", textAlign: "center" }}>
         <h2>Game Time: {gameTimeString}</h2>

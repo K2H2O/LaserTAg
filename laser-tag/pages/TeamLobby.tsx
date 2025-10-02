@@ -1,4 +1,3 @@
-// React hooks for state/ref management, Next.js router for navigation
 import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/router";
 import { Socket } from "socket.io-client";
@@ -7,31 +6,28 @@ import { initializeSocket, closeSocket } from "../client/src/utils/socket";
 interface Player {
   username: string;
   color: string;
-}// Defines player data structure with username and color
-
+}
 
 interface Team {
   teamId: number;
   players: Player[];
 }
-//defines team structure with ID and list of players
+
 interface Message {
   type: string;
   teams?: Team[];
   admin?: string;
 }
-//Defines WebSocket message structure for team updates and admin info
+
 export default function TeamLobby() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [adminUsername, setAdminUsername] = useState("");
   const socketRef = useRef<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
 
-  // State for teams and admin, refs for WebSocket and reconnection logic
   const router = useRouter();
   const { gameCode, username, color, teamId } = router.query;
 
-  // extract game parameters from URL query
   useEffect(() => {
     // Early return if required data is missing
     if (!gameCode || !username || !color || !teamId) {
@@ -49,72 +45,41 @@ export default function TeamLobby() {
     const socket = initializeSocket(gameCode, username as string, color as string, teamId as string);
     socketRef.current = socket;
 
-      socket.onopen = () => {
-        console.log("🔗 TeamLobby WebSocket connected");
-        reconnectAttempts.current = 0;
-      };
+    // Handle connection status
+    socket.on('connect', () => {
+      console.log("🔗 Connected to game server");
+      setIsConnected(true);
+    });
 
-      socket.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data) as Message;
-          console.log("TeamLobby message received:", data);
+    socket.on('disconnect', () => {
+      console.log("� Disconnected from game server");
+      setIsConnected(false);
+    });
 
-          if (data.type === "TeamListUpdate") {
-            console.log("👥 Team list update:", data.teams);
+    // Handle game events
+    socket.on('playerListUpdate', (data: { teams: Team[], admin: string }) => {
+      console.log("👥 Team list update:", data.teams);
+      setTeams(data.teams);
+      setAdminUsername(data.admin);
+    });
 
-            if (data.teams) {
-              setTeams(data.teams);
-            }
+    socket.on('startGame', () => {
+      router.push({
+        pathname: "/TeamCameraView",
+        query: { username, gameCode, color, teamId },
+      });
+    });
 
-            if (data.admin) {
-              setAdminUsername(data.admin);
-            }
-          } else if (data.type === "startGame") {
-            router.push({
-              pathname: "/TeamCameraView",
-              query: { username, gameCode, color, teamId },
-            });
-          }
-        } catch (error) {
-          console.error("❌ Error parsing WebSocket message:", error);
-        }
-      };
+    socket.on('connect_error', (error: Error) => {
+      console.error("❌ Connection error:", error);
+    });
 
-      socket.onclose = (event) => {
-        console.log(
-          `🔌 TeamLobby WebSocket closed. Code: ${event.code}, Reason: "${event.reason}", WasClean: ${event.wasClean}`
-        );
+    socket.on('error', (error: { message: string }) => {
+      console.error("❌ Socket error:", error);
+      alert(error.message || "An error occurred");
+    });
 
-        if (
-          event.code !== 1000 &&
-          event.code !== 1001 &&
-          reconnectAttempts.current < maxReconnectAttempts
-        ) {
-          reconnectAttempts.current++;
-          const delay = Math.min(
-            1000 * Math.pow(2, reconnectAttempts.current),
-            10000
-          );
-          console.log(
-            `🔄 Reconnecting in ${delay}ms (attempt ${reconnectAttempts.current}/${maxReconnectAttempts})`
-          );
-
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connectWebSocket();
-          }, delay);
-        } else if (reconnectAttempts.current >= maxReconnectAttempts) {
-          console.error("❌ Max reconnection attempts reached for PlayerLobby");
-          alert("Connection lost. Please refresh the page.");
-        }
-      };
-
-      socket.onerror = (error) => {
-        console.error("❌ WebSocket error:", error);
-      };
-    }
-
-    connectWebSocket();
-
+    // Cleanup on component unmount
     return () => {
       console.log("🧹 Cleaning up socket connection");
       closeSocket();
@@ -153,7 +118,6 @@ export default function TeamLobby() {
         position: "relative",
       }}
     >
-      {/* Main container with full-screen background image */}
       <div
         style={{
           width: "100%",
@@ -312,5 +276,4 @@ export default function TeamLobby() {
       </style>
     </div>
   );
-  // Responsive lobby UI with WebSocket updates; move styles to CSS module
 }
