@@ -1,21 +1,14 @@
-//2023721380 Ivy
-//2021561648 Bophelo Pharasi
 SESSION_PERSIST_TIME = 10;
 
-const sessions = {};
+const sessions = {}; // object that holds all game session
 // sessions will be automatically removed when all player websocket connections have been closed
 
 function getUniqueSessionId() {
-  // Generate a random 4-letter code if a string ID is needed
-  const characters = "abcdefghijklmnopqrstuvwxyz";
-  let newId;
-  do {
-    newId = Array(4)
-      .fill()
-      .map(() => characters.charAt(Math.floor(Math.random() * characters.length)))
-      .join("");
-  } while (sessions[newId]); // Ensure uniqueness
-  return newId;
+  for (let i = 0; true; i++) {
+    if (!sessions[i]) {
+      return i;
+    }
+  }
 }
 
 const exampleSession = {
@@ -34,12 +27,12 @@ const exampleSession = {
       hitsReceived: 0,
       activePowerups: {
         'powerupId': 0 // duration in seconds
-      }
+      } // template showing session structure
     },
   },
   spectators: {
     id: "websocket connection",
-  },
+  },// spectator storage , people watching but not playing
 };
 
 function createSession(id, mode = "solo") {
@@ -60,11 +53,11 @@ function createSession(id, mode = "solo") {
   };
   sessions[sessionId] = session;
   return session;
-}
+} // creates a new empty session with default values
 
 function isSessionValid(sessionId) {
   return sessions[sessionId] !== undefined;
-}
+} // checks if session exist , returns a boolean
 
 module.exports = {
   SESSION_PERSIST_TIME,

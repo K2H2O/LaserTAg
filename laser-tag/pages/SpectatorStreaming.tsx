@@ -1,3 +1,4 @@
+//core react functionality and Next.js navigation
 import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/router";
 
@@ -21,6 +22,7 @@ interface Frame {
   teamId?: number;
 }
 
+//real time viewing interface for watching game participants
 export default function SpectatorStreaming() {
   const [frameMap, setFrameMap] = useState(new Map<string, string>());
   const [usernames, setUsernames] = useState<string[]>([]);
@@ -30,12 +32,14 @@ export default function SpectatorStreaming() {
   const [gameTimeString, setGameTimeString] = useState("00:00");
   const [viewMode, setViewMode] = useState<'all' | 'team'>('all');
 
+  // websocket connection
   const socketRef = useRef<WebSocket | null>(null);
 
+  // routing 
   const router = useRouter();
   const { gameCode } = router.query;
 
-
+// websocket setup and message handling
   useEffect(() => {
     const socketUrl = `wss://bbd-lasertag.onrender.com/session/${gameCode}/spectator`;
     console.log("🔌 Connecting to WebSocket at:", socketUrl);
@@ -50,7 +54,7 @@ export default function SpectatorStreaming() {
       try {
         const data = JSON.parse(event.data);
         console.log("📦 Raw WebSocket message received:", data);
-
+       // Handle incoming camera frames from players
         if (data.type === "cameraFramesBatch" && Array.isArray(data.frames)) {
           const frames = data.frames as Frame[];
           const incomingUsernames: string[] = frames.map((f: Frame) => f.username);
@@ -141,6 +145,7 @@ export default function SpectatorStreaming() {
     };
   }, [gameCode, usernames, currentIndex]);
 
+  // go to next or previous player stream
   const goToNext = () => {
     setCurrentIndex((prev) => (prev + 1) % usernames.length);
   };
@@ -149,6 +154,7 @@ export default function SpectatorStreaming() {
     setCurrentIndex((prev) => (prev - 1 + usernames.length) % usernames.length);
   };
 
+  // get data for currently selected player
   const currentUsername = usernames[currentIndex];
   const currentFrame = frameMap.get(currentUsername);
   const currentPlayer = teams
@@ -178,6 +184,7 @@ export default function SpectatorStreaming() {
   };
 
   return (
+    // full-screen dark spectator interface
     <div
       style={{
         backgroundColor: "#000",
@@ -267,6 +274,7 @@ export default function SpectatorStreaming() {
               display: "block",
             }}
           />
+          {/* Crosshair overlay for immersive viewing */}
           <img
             src="/images/scope.png"
             alt="Scope Reticle"
@@ -382,6 +390,7 @@ export default function SpectatorStreaming() {
   );
 }
 
+// Button styling for navigation controls
 const buttonStyle = {
   fontSize: "20px",
   padding: "10px 20px",
